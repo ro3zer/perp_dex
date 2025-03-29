@@ -1,1 +1,3 @@
-no description sorry
+설명없음
+알아서 쓰셈
+질문 금지
