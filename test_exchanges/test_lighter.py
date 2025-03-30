@@ -49,8 +49,8 @@ async def main():
     print(position)
     
     # open position close
-    res = await lighter.close_position(symbol, position)
-    print(res)
+    #res = await lighter.close_position(symbol, position)
+    #print(res)
     
     await lighter.close()
 

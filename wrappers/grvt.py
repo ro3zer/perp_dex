@@ -38,6 +38,10 @@ class GrvtExchange(MultiPerpDexMixin, MultiPerpDex):
         await self.exchange.load_markets()        
         return self
     
+    async def get_mark_price(self,symbol):
+        res = await self.exchange.fetch_ticker(symbol)
+        return float(res['mark_price'])
+    
     def parse_order(self, order):
         try:
             return order['metadata']['client_order_id']

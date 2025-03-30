@@ -55,8 +55,8 @@ async def main():
     await asyncio.sleep(0.1)
     
     # open position close
-    res = await paradex.close_position(symbol, position)
-    print(res)
+    #res = await paradex.close_position(symbol, position)
+    #print(res)
     
     await paradex.close()
 

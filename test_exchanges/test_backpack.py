@@ -54,8 +54,8 @@ async def main():
     await asyncio.sleep(0.2)
     
     # position close
-    res = await backpack.close_position(symbol, position)
-    print(res)
+    #res = await backpack.close_position(symbol, position)
+    #print(res)
     
 
 if __name__ == "__main__":

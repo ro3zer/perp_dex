@@ -126,7 +126,10 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
         side = 'short' if '-' in size else 'long'
         size = size.replace('-','')
         entry_price = position['entryPrice']
-        unrealized_pnl = position['pnlUnrealized']
+        # Not exactly. Our system has real timesettlement. 
+        # # That quantity is the amount that's been extracted out of the position and settled into physical USDC.
+        unrealized_pnl = position['pnlRealized'] # here is different from other exchanges
+        
         return {
             "entry_price": entry_price,
             "unrealized_pnl": unrealized_pnl,

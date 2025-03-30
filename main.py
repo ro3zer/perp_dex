@@ -29,6 +29,7 @@ class Module:
     GET_POSITION = 'get_position'
     CLOSE_POSITION = 'close_position'
     GET_UNREALIZED_PNL = 'pnl'
+    REDUCE_POSITION = 'reduce'
 
 ALL_MODULES = [
     Module.GET_COLLATERAL,
@@ -38,7 +39,8 @@ ALL_MODULES = [
     Module.CREATE_ORDER_MARKET,
     Module.GET_POSITION,
     Module.CLOSE_POSITION,
-    Module.GET_UNREALIZED_PNL
+    Module.GET_UNREALIZED_PNL,
+    Module.REDUCE_POSITION    
 ]
 SLEEP_BETWEEN_CALLS = 0.2
 
@@ -67,8 +69,10 @@ select_module_to_keys = {
     'order': [Module.CREATE_ORDER_MARKET, Module.GET_POSITION, Module.GET_UNREALIZED_PNL], 
     # 6 [1]check position -> [2]close position -> [3]check position
     'close': [Module.GET_POSITION, Module.CLOSE_POSITION, Module.GET_POSITION],
-    # 7 [1]get position -> [2]unrealized pnl
-    'pnl': [Module.GET_POSITION, Module.GET_UNREALIZED_PNL], 
+    # 7 [1]check position -> [2]unrealized pnl
+    'pnl': [Module.GET_POSITION, Module.GET_UNREALIZED_PNL],
+    # 8 [1]reduce position -> [2]check position -> [3]get unrealized pnl
+    'reduce': [Module.REDUCE_POSITION, Module.GET_POSITION, Module.GET_UNREALIZED_PNL], 
 }
 # end of setting
 selected_keys = select_module_to_keys.get(args.module, select_module_to_keys["get_collateral"])
@@ -127,6 +131,12 @@ def update_volume_summary(exchange: str, coin: str, amount: float, is_coll_volum
     with open("volume_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
 
+def reverse_side(side:str):
+    if side not in ['buy','sell']:
+        raise 'side must be in buy or sell'
+    
+    return 'buy' if side == 'sell' else 'sell'
+
 async def run_batch(title, exchanges, handler_fn):
     print(f"\n[V] {title}")
     tasks, names = [], []
@@ -143,8 +153,11 @@ async def run_batch(title, exchanges, handler_fn):
             print(f"[ERROR] {name}: {result}")
         else:
             if title == 'Check Positions':
-                usdc_size = round(float(result['entry_price'])*float(result['size']),2)
-                usdc_size *= -1 if result['side'] == 'short' else 1
+                try:
+                    usdc_size = round(float(result['entry_price'])*float(result['size']),2)
+                    usdc_size *= -1 if result['side'] == 'short' else 1
+                except Exception as e:
+                    usdc_size = 0
                 print(f"{name}: {result} \n usdc_size: {usdc_size}")
             else:
                 print(f"{name}: {len(result) if result else 0} {result}")
@@ -190,14 +203,15 @@ async def main():
                 return await e.cancel_orders(symbol, orders)
             await run_batch("Cancel Orders", exchanges, cancel)
 
-        elif key == Module.CREATE_ORDER_MARKET:
+        elif key == Module.CREATE_ORDER_MARKET or key == Module.REDUCE_POSITION:
             print('\n[V] Create Market Orders (per exchange)')
             async def market_order_handler(name, ex):
                 symbol = symbol_create(name, coin)
                 results = []
                 for param in market_order_params_per_exchange.get(name, []):
-                    print(' *market order', name, param["side"], param["amount"])
-                    res = await ex.create_order(symbol, param["side"], param["amount"], None, "market")
+                    order_side = reverse_side(param['side']) if key == Module.REDUCE_POSITION else param['side']
+                    print(' *market order', name, order_side, param["amount"])
+                    res = await ex.create_order(symbol, order_side, param["amount"], None, "market")
                     log_volume(name, coin, float(param["amount"]))
                     results.append(res)
                 return results

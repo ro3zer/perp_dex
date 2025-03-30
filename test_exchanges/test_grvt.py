@@ -8,7 +8,7 @@ logging.getLogger("asyncio").setLevel(logging.ERROR)
 from keys.pk_grvt import GRVT_KEY
 
 # test done
-coin = 'BTC'
+coin = 'DOGE'
 symbol = symbol_create('grvt',coin)
 
 async def main():
@@ -20,6 +20,19 @@ async def main():
     coll = await grvt.get_collateral()
     print(coll)
     
+    ''' temporary SL for my own use
+    while True:
+        mark_price = await grvt.get_mark_price(symbol)
+        print(mark_price)
+        
+        if mark_price > 0.1702:
+            print('SL execute!')
+            res = await grvt.create_order(symbol, 'buy', 44900, price=0.1705)
+            print(res)
+            break
+        await asyncio.sleep(0.25)
+    '''
+    '''
     # limit sell
     res = await grvt.create_order(symbol, 'sell', 0.001, price=86000)
     print(res)
@@ -49,14 +62,14 @@ async def main():
     res = await grvt.create_order(symbol, 'sell', 0.001)
     print(res)
     await asyncio.sleep(0.1)
-    
+    '''
     position = await grvt.get_position(symbol)
     print(position)
     await asyncio.sleep(0.1)
     
     # position close
-    res = await grvt.close_position(symbol, position)
-    print(res)
+    #res = await grvt.close_position(symbol, position)
+    #print(res)
     
     await grvt.close()
 

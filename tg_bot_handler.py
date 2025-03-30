@@ -25,7 +25,7 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ 접근 권한이 없습니다.")
         return
 
-    if text in ["check", "order", "close"]:
+    if text in ["check", "order", "close","reduce"]:
         msg = await update.message.reply_text(f"🛠 `{text}` 실행 중...", parse_mode=ParseMode.MARKDOWN)
 
         # 실시간 subprocess 실행
@@ -56,7 +56,7 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❓ 지원하지 않는 명령입니다.")
 
 def build_menu():
-    buttons = [[KeyboardButton("/check"), KeyboardButton("/order"), KeyboardButton("/close")]]
+    buttons = [[KeyboardButton("/check"), KeyboardButton("/order"), KeyboardButton("/close"), KeyboardButton("/reduce")]]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,7 +75,7 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler(["check", "order", "close"], handle_command))
+    app.add_handler(CommandHandler(["check", "order", "close","reduce"], handle_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_command))
 
     print("✅ Telegram bot started")
