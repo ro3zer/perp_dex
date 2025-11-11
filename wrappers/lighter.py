@@ -23,8 +23,8 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
     def get_auth(self, expiry_sec=600):
         now = int(time.time())
         if self._cached_auth_token is None or now >= self._auth_expiry_ts:
-            self._auth_expiry_ts = now + expiry_sec
-            self._cached_auth_token = self.client.create_auth_token_with_expiry(self._auth_expiry_ts)
+            self._auth_expiry_ts = int(expiry_sec/60)
+            self._cached_auth_token, _ = self.client.create_auth_token_with_expiry(self._auth_expiry_ts)
         return self._cached_auth_token
     
     # use initialize when using main account
