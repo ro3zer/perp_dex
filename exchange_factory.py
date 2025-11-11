@@ -17,7 +17,7 @@ async def create_exchange(exchange_name: str, key_params=None):
     elif exchange_name == "backpack":
         return BackpackExchange(key_params.api_key, key_params.secret_key)
     elif exchange_name == "lighter":
-        return await LighterExchange(key_params.account_id, key_params.private_key).initialize_market_info()
+        return await LighterExchange(key_params.account_id, key_params.private_key, key_params.api_key_id, key_params.l1_address).initialize_market_info()
     else:
         raise ValueError(f"Unsupported exchange: {exchange_name}")
 

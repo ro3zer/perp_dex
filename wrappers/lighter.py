@@ -8,16 +8,17 @@ import json
 import logging
 
 class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
-    def __init__(self, account_id, private_key):
+    def __init__(self, account_id, private_key, api_key_id, l1_address):
         logging.getLogger().setLevel(logging.WARNING)
         self.url = "https://mainnet.zklighter.elliot.ai"
-        self.chain_id = 304
-        self.client = SignerClient(url=self.url, private_key=private_key, chain_id=self.chain_id, account_index=account_id)
+        # self.chain_id = 304 # no need anymore
+        self.client = SignerClient(url=self.url, private_key=private_key, account_index=account_id, api_key_index=api_key_id)
         #self.apiAccount = AccountApi(self.client.api_client)
         self.apiOrder = OrderApi(self.client.api_client)
         self.market_info = {}
         self._cached_auth_token = None
         self._auth_expiry_ts = 0
+        self.l1_address = l1_address
 
     def get_auth(self, expiry_sec=600):
         now = int(time.time())
@@ -121,7 +122,7 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
         }
         
     async def get_position(self, symbol):
-        l1_address = self.client.l1_address
+        l1_address = self.l1_address
         url = f"{self.url}/api/v1/account?by=l1_address&value={l1_address}"
         headers = {"accept": "application/json"}
 
@@ -143,7 +144,7 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
 
     async def get_collateral(self):
         
-        l1_address = self.client.l1_address
+        l1_address = self.l1_address
         url = f"{self.url}/api/v1/account?by=l1_address&value={l1_address}"
         headers = {"accept": "application/json"}
 
