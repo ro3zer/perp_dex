@@ -34,7 +34,7 @@ async def create_exchange(exchange_name: str, key_params=None):  # [MODIFIED] ьз
 
 SYMBOL_FORMATS = {
     "paradex":  lambda c: f"{c}-USD-PERP",
-    "edgex":    lambda c: f"{c}USDT",
+    "edgex":    lambda c: f"{c}USD",
     "grvt":     lambda c: f"{c}_USDT_Perp",
     "backpack": lambda c: f"{c}_USDC_PERP",
     "lighter":  lambda c: c,

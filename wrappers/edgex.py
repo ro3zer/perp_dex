@@ -42,6 +42,8 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
 
                 for contract in contract_list:
                     name = contract["contractName"]
+                    if "TEMP" in name:
+                        continue
                     self.market_info[name] = {
                         "contract": contract,
                         "meta": meta,
@@ -104,7 +106,8 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
                 price = oracle_price * Decimal("1.1")
                 price = price.quantize(tick_size, rounding=ROUND_HALF_UP)
             else:
-                price = tick_size
+                price = oracle_price * Decimal("0.9")
+                price = price.quantize(tick_size, rounding=ROUND_HALF_UP)
         else:
             price = Decimal(price).quantize(tick_size, rounding=ROUND_HALF_UP)
 

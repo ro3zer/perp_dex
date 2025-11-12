@@ -15,13 +15,13 @@ async def main():
     
     coll = await edgex.get_collateral()
     print(coll)
-    '''
+    
     # limit sell
-    res = await edgex.create_order(symbol, 'sell', 0.01, price=86000)
+    res = await edgex.create_order(symbol, 'sell', 0.01, price=110000)
     print(res)
     
     # limit buy
-    res = await edgex.create_order(symbol, 'buy', 0.01, price=80000)
+    res = await edgex.create_order(symbol, 'buy', 0.01, price=100000)
     print(res)
     
     # get open orders
@@ -29,15 +29,15 @@ async def main():
     print(open_orders)
 
     # cancel open orders
-    res = await edgex.cancel_orders(symbol,open_orders)
-    print(res)
+    #res = await edgex.cancel_orders(symbol,open_orders)
+    #print(res)
 
     # market buy
-    res = await edgex.create_order(symbol, 'buy', 0.015)
+    res = await edgex.create_order(symbol, 'buy', 0.002)
     print(res)
         
     # market sell
-    res = await edgex.create_order(symbol, 'sell', 0.01)
+    res = await edgex.create_order(symbol, 'sell', 0.001)
     print(res)
     
     # get position
@@ -45,8 +45,8 @@ async def main():
     print(position)
         
     # position close
-    #res = await edgex.close_position(symbol, position)
-    #print(res)
-    '''
+    res = await edgex.close_position(symbol, position)
+    print(res)
+    
 if __name__ == "__main__":
     asyncio.run(main())
