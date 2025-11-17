@@ -82,7 +82,14 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
         return stark_signature, timestamp
 
     async def get_mark_price(self,symbol):
-        pass
+        contract_info = self.market_info[symbol]
+        contract_id = contract_info['contractId']
+        oracle_url = f"{self.base_url}/api/v1/public/quote/getTicker"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(oracle_url, params={"contractId": contract_id}) as resp:
+                ticker_data = await resp.json()
+                last_price = Decimal(ticker_data["data"][0]["lastPrice"])
+                return last_price
 
     async def create_order(self, symbol, side, amount, price=None, order_type='market'):
         LIMIT_ORDER_WITH_FEES = 3

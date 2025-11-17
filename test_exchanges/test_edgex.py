@@ -12,10 +12,14 @@ symbol = symbol_create('edgex',coin)
 
 async def main():
     edgex = await create_exchange('edgex', EDGEX_KEY)
+
+    price = await edgex.get_mark_price(symbol)
+    print(price)
     
     coll = await edgex.get_collateral()
     print(coll)
     
+    '''
     # limit sell
     res = await edgex.create_order(symbol, 'sell', 0.01, price=110000)
     print(res)
@@ -47,6 +51,7 @@ async def main():
     # position close
     res = await edgex.close_position(symbol, position)
     print(res)
+    '''
     
 if __name__ == "__main__":
     asyncio.run(main())
