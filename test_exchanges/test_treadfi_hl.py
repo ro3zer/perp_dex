@@ -4,33 +4,43 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from exchange_factory import create_exchange, symbol_create
 import asyncio
 from keys.pk_treadfi import TREADFIHL_KEY
-# test done
+# login / logout / create_order
 
 coin = 'BTC'
 symbol = symbol_create('treadfi_hl',coin) # only perp atm
 
 async def main():
     treadfi_hl = await create_exchange('treadfi_hl',TREADFIHL_KEY)
+    #res = await treadfi_hl.login()
+    #print(res)
+    
+    #res = await treadfi_hl.logout()
+    #print(res)
+
+    # limit buy
+    #res = await treadfi_hl.create_order(symbol, 'sell', 0.00015)
+    #print(res)
+    #await asyncio.sleep(0.2)
+
+    await treadfi_hl.aclose()
     #print(treadfi_hl)
     #position = await treadfi_hl.get_position(symbol)
     #print(position)
     
+    '''
     price = await treadfi_hl.get_mark_price(symbol)
     print(price)
 
     coll = await treadfi_hl.get_collateral()
     print(coll)
     await asyncio.sleep(0.2)
-    '''
+    
     # limit sell
     res = await treadfi_hl.create_order(symbol, 'sell', 0.002, price=86000)
     print(res)
     await asyncio.sleep(0.2)
     
-    # limit buy
-    res = await treadfi_hl.create_order(symbol, 'buy', 0.002, price=80000)
-    print(res)
-    await asyncio.sleep(0.2)
+    
     
     # get open orders
     res = await treadfi_hl.get_open_orders(symbol)
