@@ -7,10 +7,10 @@ from keys.pk_treadfi import TREADFIHL_KEY
 # login / logout / create_order
 
 coin = 'BTC'
-symbol = symbol_create('treadfi_hl',coin) # only perp atm
+symbol = symbol_create('treadfi.hyperliquid',coin) # only perp atm
 
 async def main():
-    treadfi_hl = await create_exchange('treadfi_hl',TREADFIHL_KEY)
+    treadfi_hl = await create_exchange('treadfi.hyperliquid',TREADFIHL_KEY)
 
     # login
     res = await treadfi_hl.login()

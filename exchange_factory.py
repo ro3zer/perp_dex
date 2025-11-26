@@ -30,7 +30,7 @@ async def create_exchange(exchange_platform: str, key_params=None):  # [MODIFIED
         return Ex(key_params.api_key, key_params.secret_key)
     elif exchange_platform == "lighter":
         return await Ex(key_params.account_id, key_params.private_key, key_params.api_key_id, key_params.l1_address).initialize_market_info()
-    elif exchange_platform == "treadfi_hl":
+    elif exchange_platform == "treadfi.hyperliquid":
         return Ex(key_params.session_cookies, key_params.evm_private_key, key_params.main_wallet_address, key_params.sub_wallet_address, key_params.account_name)
     else:
         raise ValueError(f"Unsupported exchange: {exchange_platform}")
