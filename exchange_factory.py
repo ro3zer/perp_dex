@@ -7,7 +7,7 @@ def _load(exchange_platform: str):  # [ADDED] 필요한 경우에만 모듈 로�
         "lighter": ("wrappers.lighter", "LighterExchange"),
         "grvt": ("wrappers.grvt", "GrvtExchange"),
         "backpack": ("wrappers.backpack", "BackpackExchange"),
-        "treadfi_hl": ("wrappers.treadfi_hl", "TreadfiHlExchange"),
+        "treadfi.hyperliquid": ("wrappers.treadfi_hl", "TreadfiHlExchange"),
     }
     try:
         mod, cls = mapping[exchange_platform]
@@ -41,7 +41,7 @@ SYMBOL_FORMATS = {
     "grvt":     lambda c: f"{c}_USDT_Perp",
     "backpack": lambda c: f"{c}_USDC_PERP",
     "lighter":  lambda c: c,
-    "treadfi_hl": lambda coin: f"{coin.split(':')[0]}_{coin.split(':')[1]}:PERP-USDC" if ":" in coin else f"{coin}:PERP-USDC"
+    "treadfi.hyperliquid": lambda coin: f"{coin.split(':')[0]}_{coin.split(':')[1]}:PERP-USDC" if ":" in coin else f"{coin}:PERP-USDC"
 }
 
 def symbol_create(exchange_platform: str, coin: str):
