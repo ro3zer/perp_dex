@@ -16,10 +16,6 @@ async def main():
     res = await treadfi_hl.login()
     print(res)
     
-    position = {'size':0.0003,'side':'buy'}
-    res = await treadfi_hl.close_position(symbol, position)
-    print(res)
-
     # limit buy
     #res = await treadfi_hl.create_order(symbol, 'sell', 0.00015, price=85000)
     #print(res)

@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 from typing import Optional, Dict, Any
 from eth_account import Account  
 from eth_account.messages import encode_defunct  
@@ -233,13 +234,50 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 		return self._cookies
 
 	# ---------------------------
-	# 로컬 캐시 유틸
-	# ---------------------------
+    # 로컬 캐시 유틸
+    # ---------------------------
+	def _find_project_root_from_cwd(self) -> Path:
+		"""
+		현재 작업 디렉터리에서 시작해 상위로 올라가며
+		프로젝트 루트(marker 파일/폴더) 후보를 탐색한다.
+		"""
+		markers = {"pyproject.toml", "setup.cfg", "setup.py", ".git"}
+		p = Path.cwd().resolve()
+		try:
+			for parent in [p] + list(p.parents):
+				for name in markers:
+					if (parent / name).exists():
+						return parent
+		except Exception:
+			pass
+		return Path.cwd().resolve()
+
+	def _resolve_cache_base(self) -> Path:
+		"""
+		캐시 베이스 디렉터리 결정 순서:
+		CWD 기준 프로젝트 루트(상위로 스캔)
+		"""
+		# CWD에서 프로젝트 루트 추정
+		return self._find_project_root_from_cwd()
+
 	def _cache_dir(self) -> str:
-		# 프로젝트 루트 기준 ../.cache 폴더 생성
-		base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".cache"))
-		os.makedirs(base, exist_ok=True)
-		return base
+		"""
+		최종 캐시 디렉터리 경로 반환.
+		- 기본: <프로젝트루트>/.cache
+		- 쓰기 권한 실패 시: ~/.cache/mpdex
+		"""
+		# [CHANGED] 패키지 폴더 기준 → 프로젝트 루트 기준으로 변경
+		base = self._resolve_cache_base()
+		target = (base / ".cache")
+
+		try:
+			target.mkdir(parents=True, exist_ok=True)
+			return str(target)
+		except Exception:
+			# 권한/컨테이너 등 이슈 시 사용자 홈 캐시로 fallback
+			home_fallback = Path.home() / ".cache" / "mpdex"
+			home_fallback.mkdir(parents=True, exist_ok=True)
+			return str(home_fallback)
 
 	def _cache_path(self) -> str:
 		# signing for mainwallet
@@ -268,7 +306,6 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 		try:
 			if not (self._cookies.get("csrftoken") and self._cookies.get("sessionid")):
 				return
-			# main_wallet_address가 없으면 저장하지 않음
 			if not self.main_wallet_address:
 				return
 			payload = {
@@ -280,7 +317,6 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 			with open(self._cache_path(), "w", encoding="utf-8") as f:
 				json.dump(payload, f, ensure_ascii=False, indent=2)
 		except Exception:
-			# 캐시 실패는 치명적이지 않으므로 무시
 			pass
 
 	def _clear_cached_cookies(self) -> None:
