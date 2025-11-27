@@ -33,4 +33,4 @@ packages = ["mpdex", "wrappers"]
 py-modules = ["multi_perp_dex", "exchange_factory"]
 
 [tool.setuptools.package-data]
- "mpdex.wrappers" = ["*.html"]
+ "wrappers" = ["*.html"]
