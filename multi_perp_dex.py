@@ -37,5 +37,5 @@ class MultiPerpDexMixin:
         if not position:
             return None
         size = position.get('size')
-        side = 'sell' if position.get('side') == 'long' else 'buy'
+        side = 'sell' if position.get('side').lower() in ['long','buy'] else 'buy'
         return await self.create_order(symbol, side, size, price=None, order_type='market')
