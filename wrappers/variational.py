@@ -720,7 +720,7 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
                 funding = int(self.options.get("funding_interval_s", 3600))
                 core = await self._fetch_indicative_quote(coin=coin, qty=str(amount), funding_interval_s=funding)
                 instrument = core.get("instrument")
-            return await self._create_limit_order(
+            res = await self._create_limit_order(
                 coin=coin,
                 side=side,
                 qty=str(amount),
@@ -730,6 +730,7 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
                 #is_auto_resize=bool(self.options.get("is_auto_resize", False)),
                 #use_mark_price=bool(self.options.get("use_mark_price", False)),
             )
+            return res.get('rfq_id')
 
         # market: 최신 quote_id 필요
         cached = self._rt_cache.get(coin)
@@ -739,13 +740,14 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
         if not quote_id:
             raise RuntimeError("quote_id를 얻지 못했습니다. indicative quote 실패.")
         
-        return await self._create_market_order(
+        res = await self._create_market_order(
             coin=coin,
             side=side,
             quote_id=quote_id,
             max_slippage=float(self.options.get("max_slippage", 0.01)),
             #is_reduce_only=bool(self.options.get("reduce_only", False)),
         )
+        return res.get('rfq_id')
     
     async def get_position(self, symbol):
         await self.initialize_if_needed()
