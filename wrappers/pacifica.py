@@ -68,7 +68,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         if self._http and not self._http.closed:
             await self._http.close()
 
-    async def initialize(self) -> Dict[str, Any]:
+    async def init(self) -> Dict[str, Any]:
         """
         GET /info → 심볼 목록과 tick_size/lot_size 등을 런타임 캐시에 저장
         """

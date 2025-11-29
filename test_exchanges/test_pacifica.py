@@ -13,8 +13,8 @@ symbol = symbol_create('pacifica',coin) # only perp atm
 async def main():
     pacifica = await create_exchange('pacifica',PACIFICA_KEY)
 
-    res = await pacifica.initialize()
-    print(res.get("ok"))
+    #res = await pacifica.init()
+    #print(res.get("ok"))
 
     coll = await pacifica.get_collateral()
     print(coll)
