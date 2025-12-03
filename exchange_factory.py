@@ -40,7 +40,17 @@ async def create_exchange(exchange_platform: str, key_params=None):  # [MODIFIED
     elif exchange_platform == "pacifica":
         return await Ex(key_params.public_key, key_params.agent_public_key, key_params.agent_private_key).init()
     elif exchange_platform == "hyperliquid":
-        return Ex()
+        return await Ex(
+            wallet_address = key_params.wallet_address,
+            wallet_private_key = key_params.wallet_private_key,
+            agent_api_address = key_params.agent_api_address,
+            agent_api_private_key = key_params.agent_api_private_key,
+            by_agent = key_params.by_agent,
+            vault_address = key_params.vault_address,
+            builder_code = key_params.builder_code,
+            builder_fee_pair = key_params.builder_fee_pair,
+            fetch_by_ws = key_params.fetch_by_ws,
+        ).init()
     else:
         raise ValueError(f"Unsupported exchange: {exchange_platform}")
 

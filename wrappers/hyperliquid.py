@@ -9,7 +9,7 @@ import asyncio
 BASE_URL = "https://api.hyperliquid.xyz"
 BASE_WS = "wss://api.hyperliquid.xyz/ws"
 
-class HyperliquidExchange(MultiPerpDexMixin,MultiPerpDex):
+class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
     def __init__(self, 
               wallet_address = None,        # required
               wallet_private_key = None,    # optional, required when by_agent = False
@@ -17,10 +17,13 @@ class HyperliquidExchange(MultiPerpDexMixin,MultiPerpDex):
               agent_api_private_key = None, # optional, required when by_agent = True
               by_agent = True,              # recommend to use True
               vault_address = None,         # optional, sub-account address
+              builder_code = None,
+              builder_fee_pair: dict = None,     # {"base","dex"# optional,"xyz" # optional,"vntl" #optional,"flx" #optional}
               *,
-              ws_client = None, # ws client가 외부에서 생성됐으면 그걸 사용
               fetch_by_ws = False, # fetch pos, balance, and price by ws client
-              signing_method = None, # special case: superstack, tread.fi
+              # ws_client = None, # ws client가 외부에서 생성됐으면 그걸 사용, acquire 알고리즘으로 불필요
+              # ws_client의 경우 WS_POOL 하나를 공유
+              # signing_method = None, # special case: superstack, tread.fi, 분리?
               ):
 
         self.by_agent = by_agent
@@ -37,6 +40,8 @@ class HyperliquidExchange(MultiPerpDexMixin,MultiPerpDex):
             self.agent_api_private_key = agent_api_private_key
 
         self.vault_address = vault_address
+        self.builder_code = self._get_builder_code(builder_code)
+        self.builder_fee_pair = builder_fee_pair
         
         self.http_base = BASE_URL
         self.ws_base = BASE_WS
@@ -48,13 +53,41 @@ class HyperliquidExchange(MultiPerpDexMixin,MultiPerpDex):
         self._http =  None
 
         # WS 관련 내부 상태
-        self.ws_client: Optional[HLWSClientRaw] = ws_client if isinstance(ws_client, HLWSClientRaw) else None
+        self.ws_client: Optional[HLWSClientRaw] = None  # WS_POOL에서
         self._ws_owned: bool = self.ws_client is None   # comment: 풀에서 획득하면 True, 외부 주입이면 False
         self._ws_pool_key = None                        # comment: release 시 사용
         
+        self._ws_init_lock = asyncio.Lock()                  # comment: create_ws_client 중복 호출 방지
         self.fetch_by_ws = fetch_by_ws
-        self.signing_method = signing_method
+        #self.signing_method = signing_method
 
+    def _get_builder_code(self, builder_code:str = None):
+        if builder_code:
+            if builder_code.startswith('0x'):
+                return builder_code # fallback to original
+            else:
+                match builder_code.lower():
+                    case 'lit' | 'lit.trade' | 'littrade':
+                        return "0x24a747628494231347f4f6aead2ec14f50bcc8b7"
+                    case 'based' | 'basedone' | 'basedapp':
+                        return "0x1924b8561eef20e70ede628a296175d358be80e5"
+                    case 'dexari':
+                        return "0x7975cafdff839ed5047244ed3a0dd82a89866081"
+                    case 'liquid':
+                        return "0x6d4e7f472e6a491b98cbeed327417e310ae8ce48"
+                    case 'supercexy':
+                        return "0x0000000bfbf4c62c43c2e71ef0093f382bf7a7b4"
+                    case 'bullpen':
+                        return "0x4c8731897503f86a2643959cbaa1e075e84babb7"
+                    case 'mass':
+                        return "0xf944069b489f1ebff4c3c6a6014d58cbef7c7009"
+                    case 'dreamcash':
+                        return "0x4950994884602d1b6c6d96e4fe30f58205c39395"
+                    #case 'superstack':
+                    #    return "0xcdb943570bcb48a6f1d3228d0175598fea19e87b"
+                    #case 'tread.fi' | 'treadfi':
+                    #    return "0x999a4b5f268a8fbf33736feff360d462ad248dbf"
+    
     def _session(self) -> aiohttp.ClientSession:
         if self._http is None or self._http.closed:
             self._http = aiohttp.ClientSession(
@@ -69,17 +102,23 @@ class HyperliquidExchange(MultiPerpDexMixin,MultiPerpDex):
         # HTTP 세션 종료 + WS 풀 release
         if self._http and not self._http.closed:
             await self._http.close()
-        # 풀에서 소유한 WS만 release (외부 주입 WS는 소유권 없음)
-        if self._ws_owned and self._ws_pool_key:
+        # WS 풀 release: 이 인스턴스에서 acquire한 경우에만 해제
+        if self._ws_pool_key:
             ws_url, addr = self._ws_pool_key
             try:
-                await WS_POOL.release(ws_url=ws_url, address=addr)
+                await WS_POOL.release(ws_url=ws_url, address=addr)  # comment: 참조 카운트 -1
             except Exception:
                 pass
+            finally:
+                self._ws_pool_key = None
+                self.ws_client = None
 
     async def init(self):
         await self._init_spot_token_map() # for rest api 
         await self._get_dex_list()
+        if self.fetch_by_ws:
+            await self.create_ws_client()
+        return self
 
     async def _get_dex_list(self):
         url = f"{self.http_base}/info"
@@ -95,7 +134,8 @@ class HyperliquidExchange(MultiPerpDexMixin,MultiPerpDex):
         for e in resp:
             n = (e or{}).get("name")
             if n:
-                self.dex_list.append(n)
+                # 이 순서가 webData3의 순서, self.dex_keys in HLWSClientRaw
+                self.dex_list.append(n) 
 
     async def _init_spot_token_map(self):
         """
@@ -213,44 +253,32 @@ class HyperliquidExchange(MultiPerpDexMixin,MultiPerpDex):
     async def create_ws_client(self):
         """
         WS 커넥션을 '1회 연결 + 다중 구독'으로 운용.
-        - 외부 ws_client가 주어지면 그것을 사용(연결/구독 보장 후 필요한 DEX만 추가 구독)
-        - 없으면 전역 풀(WS_POOL)에서 (ws_url,address) 키로 하나를 획득하여 공유
+        - 전역 풀(WS_POOL)에서 (ws_url,address) 키로 하나를 획득하여 공유
+        - 인스턴스 내부에서 중복 acquire를 방지
         """
-        # 기본 주소(서브계정 우선)
-        address = self.vault_address if self.vault_address else self.wallet_address
-        dex_list = list(set([d.lower() for d in (self.dex_list or ["hl"])]))
+        async with self._ws_init_lock:
+            if self.ws_client is not None:
+                return self.ws_client
+            
+            # 기본 주소(서브계정 우선)
+            address = self.vault_address if self.vault_address else self.wallet_address
+            dex_list = list(set([d.lower() for d in (self.dex_list or ["hl"])]))
 
-        # 1) 외부에서 ws_client가 주어진 경우: 연결/구독 보장 후 필요한 DEX 구독만 추가
-        if self.ws_client is not None:
-            # comment: 주소가 다르면 유저 스트림(webData3/spotState)은 이 인스턴스와 불일치할 수 있음
-            try:
-                await self.ws_client.ensure_spot_token_map_http() # rest api
-                await self.ws_client.ensure_connected_and_subscribed()
-                # 필요한 DEX를 동일 커넥션에서 추가 구독
-                for dex in dex_list:
-                    await self.ws_client.ensure_allmids_for(None if dex == "hl" else dex)
-            except Exception as e:
-                raise
-            return
+            # 풀에서 획득(없으면 생성) → 연결/기본 구독은 풀 측에서 처리
+            client = await WS_POOL.acquire(
+                ws_url=self.ws_base,
+                http_base=self.http_base,
+                address=address,
+                dex=None,  # comment: 우선 기본(HL) allMids
+            )
+            # 필요한 다른 DEX allMids도 추가 구독
+            for dex in dex_list:
+                if dex != "hl":
+                    await client.ensure_allmids_for(dex)
 
-        # 2) 풀에서 획득(없으면 생성) → 연결/구독은 풀에서 처리
-        #    키: (ws_base, address)
-        #    참고: address=None이면 '가격 전용' 공유 커넥션
-        # 풀 acquire
-        client = await WS_POOL.acquire(
-            ws_url=self.ws_base,
-            http_base=self.http_base,
-            address=address,
-            dex=None,  # comment: 우선 기본(HL) allMids
-        )
-        # 필요한 다른 DEX allMids도 추가 구독
-        for dex in dex_list:
-            if dex != "hl":
-                await client.ensure_allmids_for(dex)
-
-        self.ws_client = client
-        self._ws_owned = True
-        self._ws_pool_key = (self.ws_base, (address or "").lower())
+            self.ws_client = client
+            self._ws_pool_key = (self.ws_base, (address or "").lower())
+            return self.ws_client
 
     async def create_order(self, symbol, side, amount, price=None, order_type='market'):
         pass
@@ -275,16 +303,60 @@ class HyperliquidExchange(MultiPerpDexMixin,MultiPerpDex):
             try:
                 return await self.get_mark_price_ws(symbol,is_spot=is_spot)
             except Exception as e:
-                pass # fallback to rest api
+                pass
         
+        return None
         # default rest api
     
-    async def get_mark_price_ws(self,symbol,*,is_spot=False):
-        pass
+    async def get_mark_price_ws(self,symbol, *, is_spot=False, timeout: float = 3.0):
+        """
+        WS 캐시 기반 마크 프라이스 조회.
+        - is_spot=True 이면 'BASE/QUOTE' 페어 가격을 조회
+        - is_spot=False 이면 perp(예: 'BTC') 가격을 조회
+        - 첫 틱이 아직 도착하지 않은 경우 wait_price_ready가 있으면 timeout까지 대기
+        - 값을 얻지 못하면 예외를 던져 상위(get_mark_price)에서 REST 폴백하게 한다.
+        """
+        if not self.ws_client:
+            await self.create_ws_client()
+
+        raw = str(symbol).strip()
+        if "/" in raw:
+            is_spot = True
+
+        if is_spot:
+            pair = raw.upper() if "/" in raw else f"{raw.upper()}/USDC"
+            # spot_pair로 명시
+            if hasattr(self.ws_client, "wait_price_ready"):
+                try:
+                    await asyncio.wait_for(
+                        self.ws_client.wait_price_ready(pair, timeout=timeout, kind="spot_pair"),
+                        timeout=timeout
+                    )
+                except Exception:
+                    pass
+            px = self.ws_client.get_spot_pair_px(pair)
+            if px is None:
+                raise TimeoutError(f"WS spot price not ready for {pair}")
+            return float(px)
+
+        # Perp 경로
+        key = raw.upper()
+        # perp로 명시
+        try:
+            await asyncio.wait_for(
+                self.ws_client.wait_price_ready(key, timeout=timeout, kind="perp"),
+                timeout=timeout
+            )
+        except Exception:
+            pass
+
+        px = self.ws_client.get_price(key)
+        if px is None:
+            raise TimeoutError(f"WS perp price not ready for {key}")
+        return float(px)
 
     async def get_open_orders(self, symbol):
         pass
-    
 
 async def test():
     hl = HyperliquidExchange()

@@ -4,27 +4,31 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from exchange_factory import create_exchange, symbol_create
 import asyncio
 import time
-#from keys.pk_hyperliquid import HYPERLIQUID_KEY
+from keys.pk_hyperliquid import HYPERLIQUID_KEY
 
 # test done
 coin = 'BTC'
 symbol = symbol_create('hyperliquid',coin) # only perp atm
 
 async def main():
-    hyperliquid = await create_exchange('hyperliquid',"")
+    HYPERLIQUID_KEY.fetch_by_ws = True
+    HYPERLIQUID_KEY.builder_fee_pair["base"] = 10
+    HYPERLIQUID_KEY.builder_fee_pair["dex"] = 10 # example
+    HYPERLIQUID_KEY.builder_fee_pair["xyz"] = 10 # example
+    HYPERLIQUID_KEY.builder_fee_pair["vntl"] = 10 # example
+    HYPERLIQUID_KEY.builder_fee_pair["flx"] = 10 # example
 
-    res = await hyperliquid.init() # login and initialize
-    print(hyperliquid.spot_index_to_name)
-    print(hyperliquid.spot_name_to_index)
+    hyperliquid = await create_exchange('hyperliquid',HYPERLIQUID_KEY)
+
+    #res = await hyperliquid.init() # login and initialize
+    #print(hyperliquid.spot_index_to_name)
+    #print(hyperliquid.spot_name_to_index)
     print(hyperliquid.dex_list)
 
-    res = await hyperliquid.create_ws_client()
+    price = await hyperliquid.get_mark_price(symbol,is_spot=False)
+    print(price)
 
-    while True:
-        price = hyperliquid.ws_client.get_price("xyz:XYZ100")
-        print(price)
-        await asyncio.sleep(1)
-
+    await hyperliquid.close()
     return
     
     coll = await hyperliquid.get_collateral()

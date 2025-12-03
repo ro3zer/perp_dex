@@ -190,7 +190,7 @@ class HLWSClientRaw:
         self.positions_norm: Dict[str, Dict[str, Any]] = {}  # coin -> normalized position
         
         # [추가] webData3 DEX별 캐시/순서
-        self.dex_keys: List[str] = ["hl", "xyz", "flx", "vntl"]  # 인덱스→DEX 키 매핑 우선순위
+        self.dex_keys: List[str] = ["hl", "xyz", "flx", "vntl", "hyna"]  # 인덱스→DEX 키 매핑 우선순위
         self.margin_by_dex: Dict[str, Dict[str, float]] = {}     # dex -> {'accountValue', 'withdrawable', ...}
         self.positions_by_dex_norm: Dict[str, Dict[str, Dict[str, Any]]] = {}  # dex -> {coin -> norm pos}
         self.positions_by_dex_raw: Dict[str, List[Dict[str, Any]]] = {}         # dex -> raw assetPositions[*].position 목록
@@ -199,6 +199,79 @@ class HLWSClientRaw:
 
         self._send_lock = asyncio.Lock()
         self._active_subs: set[str] = set()  # 이미 보낸 구독의 키 집합
+
+        # 이벤트 키 충돌 방지: kind 네임스페이스를 포함한 문자열 키 사용
+        #   예) "perp|BTC", "spot_base|PURR", "spot_pair|PURR/USDC"
+        self._price_events: Dict[str, asyncio.Event] = {}  # comment: {'perp|BTC': Event(), ...}
+
+    def _event_key(self, kind: str, key: str) -> str:
+        return f"{kind}|{str(key).upper().strip()}"
+    
+    def _notify_perp(self, coin: str) -> None:
+        try:
+            ev = self._price_events.get(self._event_key("perp", coin))
+            if ev and not ev.is_set():
+                ev.set()
+        except Exception:
+            pass
+
+    def _notify_spot_base(self, base: str) -> None:
+        try:
+            ev = self._price_events.get(self._event_key("spot_base", base))
+            if ev and not ev.is_set():
+                ev.set()
+        except Exception:
+            pass
+
+    def _notify_spot_pair(self, pair: str) -> None:
+        try:
+            ev = self._price_events.get(self._event_key("spot_pair", pair))
+            if ev and not ev.is_set():
+                ev.set()
+        except Exception:
+            pass
+    
+    # 외부 API: 첫 틱(또는 이미 캐시 보유)까지 대기
+    async def wait_price_ready(
+        self,
+        symbol: str,
+        timeout: float = 5.0,
+        *,
+        kind: Optional[str] = None,    # 'perp' | 'spot_base' | 'spot_pair' (None이면 자동 판단)
+    ) -> bool:
+        """
+        - kind가 명시되면 해당 타입의 캐시를 점검하고 그 이벤트만 대기.
+        - kind가 None이면: '/' 포함 → spot_pair, 그 외 → perp 로 간주.
+          (PURR 같은 모호한 베이스 토큰은 반드시 kind를 지정하세요: kind='spot_base')
+        """
+        s = str(symbol).strip().upper()
+        k = (kind or ("spot_pair" if "/" in s else "perp")).lower()
+
+        # 1) 즉시 보유 체크
+        has_val = False
+        if k == "perp":
+            has_val = (self.get_price(s) is not None)
+        elif k == "spot_pair":
+            has_val = (self.get_spot_pair_px(s) is not None)
+        elif k == "spot_base":
+            has_val = (self.get_spot_price(s) is not None)
+        else:
+            raise ValueError(f"wait_price_ready: invalid kind={kind!r}")
+
+        if has_val:
+            return True
+
+        # 2) 이벤트 생성 후 대기
+        ek = self._event_key(k, s)
+        ev = self._price_events.get(ek)
+        if ev is None:
+            ev = asyncio.Event()
+            self._price_events[ek] = ev
+        try:
+            await asyncio.wait_for(ev.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     @property
     def connected(self) -> bool:
@@ -869,11 +942,13 @@ class HLWSClientRaw:
 
                         # 1-1) 페어 가격 캐시
                         self.spot_pair_prices[pair_name] = px
+                        self._notify_spot_pair(pair_name)
                         
                         # 1-2) 쿼트가 USDC인 경우 base 단일 가격도 채움
                         if quote == "USDC":
                             self.spot_prices[base] = px
-
+                            self._notify_spot_base(base)
+                        
                         n_pair += 1
                         continue
 
@@ -887,9 +962,11 @@ class HLWSClientRaw:
                         if px is not None:
                             pair_name = raw_key.strip().upper()
                             self.spot_pair_prices[pair_name] = px
-                            
+                            self._notify_spot_pair(pair_name)
+
                             if pair_name.endswith("/USDC"):
                                 self.spot_prices[maybe_spot_base] = px
+                                self._notify_spot_base(maybe_spot_base)
                                 
                         n_pair_text += 1
                         continue
@@ -903,6 +980,7 @@ class HLWSClientRaw:
                     except Exception:
                         continue
                     self.prices[perp_key] = px
+                    self._notify_perp(perp_key)
                     n_perp += 1
 
             return
@@ -1189,7 +1267,7 @@ async def run_demo(base: str, address: Optional[str],
     ws_host = http_to_wss(http_base)
 
     # 1) 시작 시 DEX 목록 조회 → scope 리스트 생성
-    #dex_list = HLWSClientRaw.discover_perp_dexs_http(http_base)  # ex: ['xyz','flx','vntl']
+    #dex_list = HLWSClientRaw.discover_perp_dexs_http(http_base)  # ex: ['xyz','flx','vntl','hyna']
     scopes = [dex_resolved] if dex_resolved else ["hl"]  # 선택한 스코프만 WS 생성
 
     # 2) scope별 WS 인스턴스 생성/구독
