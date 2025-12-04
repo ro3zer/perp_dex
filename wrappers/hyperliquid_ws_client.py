@@ -190,7 +190,7 @@ class HLWSClientRaw:
         self.positions_norm: Dict[str, Dict[str, Any]] = {}  # coin -> normalized position
         
         # [추가] webData3 DEX별 캐시/순서
-        self.dex_keys: List[str] = ["hl", "xyz", "flx", "vntl", "hyna"]  # 인덱스→DEX 키 매핑 우선순위
+        self.dex_keys: List[str] = ['hl', 'xyz', 'flx', 'vntl', 'hyna']  # 인덱스→DEX 키 매핑 우선순위
         self.margin_by_dex: Dict[str, Dict[str, float]] = {}     # dex -> {'accountValue', 'withdrawable', ...}
         self.positions_by_dex_norm: Dict[str, Dict[str, Dict[str, Any]]] = {}  # dex -> {coin -> norm pos}
         self.positions_by_dex_raw: Dict[str, List[Dict[str, Any]]] = {}         # dex -> raw assetPositions[*].position 목록
@@ -460,6 +460,7 @@ class HLWSClientRaw:
         try:
             # userState(참고/보조)
             user_state = data.get("userState") or {}
+            
             
             self.server_time = user_state.get("serverTime") or self.server_time
             if user_state.get("user"):
