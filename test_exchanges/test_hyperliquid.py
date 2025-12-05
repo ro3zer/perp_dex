@@ -9,6 +9,8 @@ from keys.pk_hyperliquid import HYPERLIQUID_KEY, HYPERLIQUID_KEY2
 # test done
 coin = 'BTC'
 symbol = symbol_create('hyperliquid',coin) # only perp atm
+coin = 'xyz:XYZ100'
+symbol2 = symbol_create('hyperliquid',coin) # only perp atm
 is_spot = False
 
 async def main():
@@ -26,7 +28,7 @@ async def main():
 
     price = await hyperliquid.get_mark_price(symbol,is_spot=is_spot)
     print(price)
-    price = await hyperliquid2.get_mark_price(coin,is_spot=is_spot)
+    price = await hyperliquid2.get_mark_price(symbol2,is_spot=is_spot)
     print(price)
 
     await asyncio.sleep(0.5)
@@ -40,14 +42,13 @@ async def main():
     # get position
     position = await hyperliquid.get_position(symbol)
     print(position)
-    position = await hyperliquid2.get_position(symbol)
+    position = await hyperliquid2.get_position(symbol2)
     print(position)
     await asyncio.sleep(0.5)
 
-    # get open orders
     open_orders = await hyperliquid.get_open_orders(symbol)
     print(open_orders)
-    open_orders = await hyperliquid2.get_open_orders(symbol)
+    open_orders = await hyperliquid2.get_open_orders(symbol2)
     print(open_orders)
     await asyncio.sleep(0.5)
 

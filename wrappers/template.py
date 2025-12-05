@@ -24,9 +24,3 @@ class Template(MultiPerpDexMixin,MultiPerpDex):
 
     async def get_mark_price(self,symbol):
         pass
-
-    async def get_open_orders(self, symbol):
-        pass
-    
-    async def close_position(self, symbol, position, *, is_reduce_only=False):
-        pass

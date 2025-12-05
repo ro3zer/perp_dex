@@ -196,6 +196,7 @@ class HLWSClientRaw:
         self.positions_by_dex_raw: Dict[str, List[Dict[str, Any]]] = {}         # dex -> raw assetPositions[*].position 목록
         self.asset_ctxs_by_dex: Dict[str, List[Dict[str, Any]]] = {}            # dex -> assetCtxs(raw list)
         self.total_account_value: float = 0.0
+        self._open_orders_ready = asyncio.Event()
 
         self._send_lock = asyncio.Lock()
         self._active_subs: set[str] = set()  # 이미 보낸 구독의 키 집합
@@ -203,6 +204,52 @@ class HLWSClientRaw:
         # 이벤트 키 충돌 방지: kind 네임스페이스를 포함한 문자열 키 사용
         #   예) "perp|BTC", "spot_base|PURR", "spot_pair|PURR/USDC"
         self._price_events: Dict[str, asyncio.Event] = {}  # comment: {'perp|BTC': Event(), ...}
+
+    def _normalize_open_order(self, o: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        원본 open order o를 표준 dict로 변환.
+        필수 키: order_id, symbol
+        추가 키: side('A'|'B'), price(float), size(float), timestamp(int), raw
+        - coin == '@{pairIdx}' → 'BASE/QUOTE'로 매핑(spot)
+        - coin == 'AAA' 또는 'xyz:XYZ100' → 그대로 대문자 심볼(Perp)
+        """
+        try:
+            coin_raw = str(o.get("coin") or "")
+            # 심볼 해석
+            if coin_raw.startswith("@"):
+                # 스팟 페어 인덱스
+                try:
+                    pair_idx = int(coin_raw[1:])
+                except Exception:
+                    return None
+                pair = self.spot_asset_index_to_pair.get(pair_idx)
+                if not pair:
+                    # 페어 맵이 아직 준비 전이면 보류(다음 메시지에서 갱신됨)
+                    return None
+                symbol = str(pair).upper()
+            else:
+                # 텍스트 페어 또는 Perp 심볼
+                symbol = coin_raw.upper()
+
+            # 수치 필드
+            def fnum(x, default=None):
+                try:
+                    return float(x)
+                except Exception:
+                    return default
+
+            out = {
+                "order_id": o.get("oid"),
+                "symbol": symbol,
+                "side": "short" if o.get("side") == 'A' else 'long',
+                "price": fnum(o.get("limitPx")),
+                "size": fnum(o.get("sz")),
+                #"timestamp": int(o.get("timestamp")) if o.get("timestamp") is not None else None,
+                #"raw": o,
+            }
+            return out if out["order_id"] is not None and out["symbol"] else None
+        except Exception:
+            return None
 
     # 외부(풀)에서 DEX 순서를 주입
     def set_dex_order(self, order: List[str]) -> None:
@@ -260,6 +307,15 @@ class HLWSClientRaw:
                 ev.set()
         except Exception:
             pass
+
+    async def wait_open_orders_ready(self, timeout: float = 2.0) -> bool:
+        try:
+            if self._open_orders_ready.is_set():
+                return True
+            await asyncio.wait_for(self._open_orders_ready.wait(), timeout=timeout)
+            return True
+        except Exception:
+            return False
     
     # 외부 API: 첫 틱(또는 이미 캐시 보유)까지 대기
     async def wait_price_ready(
@@ -360,8 +416,9 @@ class HLWSClientRaw:
             await self._send_subscribe({"type": "allMids"})
         # 2) 주소 구독(webData3/spotState)
         if self.address:
-            await self._send_subscribe({"type": "webData3", "user": self.address})
+            await self._send_subscribe({"type": "allDexsClearinghouseState", "user": self.address})
             await self._send_subscribe({"type": "spotState", "user": self.address})
+            await self._send_subscribe({"type": "openOrders", "user": self.address, "dex":"ALL_DEXS"})
 
     async def ensure_subscribe_active_asset(self, coin: str) -> None:
         """
@@ -449,6 +506,72 @@ class HLWSClientRaw:
 
     def get_asset_ctxs_by_dex(self, dex: Optional[str] = None) -> List[Dict[str, Any]]:
         return list(self.asset_ctxs_by_dex.get((dex or "hl").lower(), []))
+
+    # allDexsClearinghouseState 파서
+    def _update_from_allDexsClearinghouseState(self, data: Dict[str, Any]) -> None:
+        """
+        data: {"user": "...", "clearinghouseStates": [ [dex, chState], ... ] }
+        dex == "" → 'hl' 로 매핑
+        chState 구조는 clearinghouseState와 동일
+        """
+        try:
+            ch_states = (data or {}).get("clearinghouseStates") or []
+            total_av = 0.0
+
+            # 초기화(존재하는 키만 갱신할 경우 덮어쓰기)
+            # self.margin_by_dex, self.positions_by_dex_norm 등은 부분 갱신 허용
+
+            for item in ch_states:
+                # item: ["", {...}] 또는 ["xyz", {...}]
+                if not isinstance(item, (list, tuple)) or len(item) != 2:
+                    continue
+                dex_in, ch = item[0], (item[1] or {})
+                dex_key = ("hl" if (dex_in is None or str(dex_in).strip() == "") else str(dex_in).lower().strip())
+
+                ms = ch.get("marginSummary") or {}
+
+                def fnum(x, default=0.0):
+                    try:
+                        return float(x)
+                    except Exception:
+                        return default
+
+                margin = {
+                    "accountValue": fnum(ms.get("accountValue")),
+                    "totalNtlPos":  fnum(ms.get("totalNtlPos")),
+                    "totalRawUsd":  fnum(ms.get("totalRawUsd")),
+                    "totalMarginUsed": fnum(ms.get("totalMarginUsed")),
+                    "crossMaintenanceMarginUsed": fnum(ch.get("crossMaintenanceMarginUsed")),
+                    "withdrawable": fnum(ch.get("withdrawable")),
+                    "time": ch.get("time"),
+                }
+                self.margin_by_dex[dex_key] = margin
+                total_av += margin["accountValue"]
+
+                # 포지션 정규화
+                norm_map: Dict[str, Dict[str, Any]] = {}
+                raw_list: List[Dict[str, Any]] = []
+                for ap in ch.get("assetPositions") or []:
+                    pos = (ap or {}).get("position") or {}
+                    if not pos:
+                        continue
+                    raw_list.append(pos)
+                    coin_raw = str(pos.get("coin") or "")
+                    coin_upper = coin_raw.upper()
+                    try:
+                        norm = self._normalize_position(pos)
+                        norm_map[coin_upper] = norm
+                        if ":" in coin_raw:
+                            norm_map[coin_raw] = norm
+                    except Exception:
+                        continue
+                self.positions_by_dex_raw[dex_key] = raw_list
+                self.positions_by_dex_norm[dex_key] = norm_map
+
+            self.total_account_value = total_av
+
+        except Exception as e:
+            ws_logger.debug(f"[allDexsClearinghouseState] update error: {e}", exc_info=True)
 
     def _update_from_webData3(self, data: Dict[str, Any]) -> None:
         """
@@ -697,8 +820,9 @@ class HLWSClientRaw:
             subs.append({"type":"allMids"})  # HL(메인)
         # 2) 주소가 있으면 user 스트림(webData3/spotState)도 구독
         if self.address:
-            subs.append({"type":"webData3","user": self.address})
+            subs.append({"type":"allDexsClearinghouseState","user": self.address})
             subs.append({"type":"spotState","user": self.address})
+            subs.append({"type":"openOrders","user": self.address, "dex":"ALL_DEXS"})
         return subs
     
     def _update_spot_balances(self, balances_list: Optional[List[Dict[str, Any]]]) -> None:
@@ -818,6 +942,21 @@ class HLWSClientRaw:
         if ch == "pong":
             ws_logger.debug("received pong")
             return
+        
+        if ch == "openOrders":
+            data = msg.get("data") or {}
+            orders = data.get("orders") or []
+            normalized: List[Dict[str, Any]] = []
+            for o in orders:
+                if not isinstance(o, dict):
+                    continue
+                no = self._normalize_open_order(o)
+                if no:
+                    normalized.append(no)
+            self.open_orders = normalized
+            if self._open_orders_ready and not self._open_orders_ready.is_set():
+                self._open_orders_ready.set()
+            return
 
         if ch == "allMids":
             data = msg.get("data") or {}
@@ -898,11 +1037,17 @@ class HLWSClientRaw:
             self._update_spot_balances(balances_list)
 
             return
-            
-        # 유저 스냅샷(잔고 등)
-        elif ch == "webData3":
+        
+        # 통합 Perp 계정 상태
+        if ch == "allDexsClearinghouseState":
             data_body = msg.get("data") or {}
-            self._update_from_webData3(data_body)
+            self._update_from_allDexsClearinghouseState(data_body)  # [ADDED]
+            return
+        
+        # 유저 스냅샷(잔고 등)
+        #elif ch == "webData3":
+        #    data_body = msg.get("data") or {}
+        #    self._update_from_webData3(data_body)
 
     async def _handle_disconnect(self) -> None:
         await self._safe_close_only()

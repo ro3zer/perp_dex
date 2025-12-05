@@ -327,8 +327,133 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
     async def create_order(self, symbol, side, amount, price=None, order_type='market'):
         pass
 
+    # 포지션 파싱 공통 헬퍼
+    def _parse_position_core(self, pos: dict) -> dict:
+        """
+        clearinghouseState.assetPositions[*].position 또는 WS 정규화 포맷을
+        표준 스키마로 변환합니다.
+        반환 스키마:
+        {"entry_price": float|None, "unrealized_pnl": float|None, "side": "long"|"short"|"flat", "size": float}
+        """
+        def fnum(x, default=None):
+            try:
+                return float(x)
+            except Exception:
+                return default
+
+        # WS 정규화 포맷(이미 float) 대응
+        if "entry_px" in pos or "upnl" in pos or "size" in pos:
+            size = fnum(pos.get("size"), 0.0) or 0.0
+            side = pos.get("side") or ("long" if size > 0 else ("short" if size < 0 else "flat"))
+            return {
+                "entry_price": fnum(pos.get("entry_px")),
+                "unrealized_pnl": fnum(pos.get("upnl"), 0.0),
+                "side": side,
+                "size": abs(size),
+            }
+
+        # REST 원본 포맷 대응
+        size_signed = fnum(pos.get("szi"), 0.0) or 0.0
+        side = "long" if size_signed > 0 else ("short" if size_signed < 0 else "flat")
+        return {
+            "entry_price": fnum(pos.get("entryPx")),
+            "unrealized_pnl": fnum(pos.get("unrealizedPnl"), 0.0),
+            "side": side,
+            "size": abs(size_signed),
+        }
+    
     async def get_position(self, symbol):
-        pass
+        """
+        주어진 perp 심볼에 대한 단일 포지션 요약을 반환합니다.
+        반환 스키마:
+          {"entry_price": float|None, "unrealized_pnl": float|None, "side": "long"|"short"|"flat", "size": float}
+        """
+        if self.fetch_by_ws:
+            try:
+                pos = await self.get_position_ws(symbol, timeout=2.0)
+                if pos is not None:
+                    return pos
+            except Exception:
+                pass
+        return await self.get_position_rest(symbol)
+    
+    async def get_position_ws(self, symbol: str, timeout: float = 2.0, dex: str | None = None) -> dict:
+        """
+        webData3(WS 캐시)에서 조회. 스냅샷 미도착 시 timeout까지 짧게 대기합니다.
+        dex를 지정하지 않으면 self.dex_list 순서대로 검색합니다.
+        """
+        address = self.vault_address or self.wallet_address
+        if not address:
+            return None
+
+        if not self.ws_client:
+            await self.create_ws_client()
+
+        # 스냅샷 대기(간단 폴링)
+        deadline = time.monotonic() + float(timeout)
+        while time.monotonic() < deadline:
+            if getattr(self.ws_client, "positions_by_dex_norm", None):
+                break
+            await asyncio.sleep(0.05)
+
+        sym = str(symbol).strip().upper()
+        # 현재 캐시에 있는 키 기반으로 순회
+        if dex:
+            dex_keys = [str(dex).lower()]
+        else:
+            dex_keys = list(getattr(self.ws_client, "positions_by_dex_norm", {}).keys())
+
+        for dk in dex_keys:
+            pos_map = (self.ws_client.positions_by_dex_norm or {}).get(dk) or {}
+            pos = pos_map.get(sym)
+            if not pos:
+                continue
+            parsed = self._parse_position_core(pos)
+            if parsed["size"] and parsed["side"] != "flat":
+                return parsed
+        return None
+    
+    async def get_position_rest(self, symbol: str, dex: str | None = None) -> dict:
+        """
+        REST clearinghouseState를 dex별로 조회하여 포지션을 찾습니다.
+        dex를 지정하지 않으면 self.dex_list 순서대로 검색합니다.
+        """
+        address = self.vault_address or self.wallet_address
+        if not address:
+            return None
+
+        url = f"{self.http_base}/info"
+        headers = {"Content-Type": "application/json"}
+        s = self._session()
+
+        def _dex_param(name: Optional[str]) -> str:
+            k = (name or "").strip().lower()
+            return "" if (k == "" or k == "hl") else k
+
+        sym = str(symbol).strip().upper()
+        dex_iter = [dex] if dex else list(dict.fromkeys(self.dex_list or ["hl"]))
+
+        for d in dex_iter:
+            payload = {"type": "clearinghouseState", "user": address, "dex": _dex_param(d)}
+            try:
+                async with s.post(url, json=payload, headers=headers) as r:
+                    data = await r.json()
+            except aiohttp.ContentTypeError:
+                continue
+            except Exception:
+                continue
+
+            aps = (data or {}).get("assetPositions") or []
+            for ap in aps:
+                pos = (ap or {}).get("position") or {}
+                coin = str(pos.get("coin") or "").upper()
+                if coin != sym:
+                    continue
+                parsed = self._parse_position_core(pos)
+                if parsed["size"] and parsed["side"] != "flat":
+                    return parsed
+
+        return None
     
     async def close_position(self, symbol, position):
         pass
@@ -380,20 +505,15 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
         headers = {"Content-Type": "application/json"}
         s = self._session()
 
-        # ---------------- Perp: clearinghouseState (DEX 집계) ----------------
-        dex_order = list(dict.fromkeys(self.dex_list or ["hl"]))  # 중복 제거 + 순서 유지
-        # 'hl' 은 API에서 빈 문자열("")이 첫 perp dex을 의미
-        def _dex_param(name: str) -> str:
+        # ---------------- Perp: clearinghouseState 집계 ----------------
+        def _dex_param(name: Optional[str]) -> str:
             k = (name or "").strip().lower()
             return "" if (k == "" or k == "hl") else k
 
+        dex_order = list(dict.fromkeys(self.dex_list or ["hl"]))  # 순서 유지 + 중복 제거
+
         async def _fetch_ch(dex_name: str) -> tuple[float, float]:
-            payload = {"type": "clearinghouseState", "user": address}
-            dp = _dex_param(dex_name)
-            if dp != "":
-                payload["dex"] = dp
-            else:
-                payload["dex"] = ""  # 명시적으로 첫 DEX
+            payload = {"type": "clearinghouseState", "user": address, "dex": _dex_param(dex_name)}
             try:
                 async with s.post(url, json=payload, headers=headers) as r:
                     data = await r.json()
@@ -401,7 +521,6 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
                 return (0.0, 0.0)
             except Exception:
                 return (0.0, 0.0)
-
             try:
                 ms = (data or {}).get("marginSummary") or {}
                 av = float(ms.get("accountValue") or 0.0)
@@ -413,10 +532,11 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
                 wd = 0.0
             return (av, wd)
 
-        # 병렬 요청
+        # 병렬 호출
         perp_results = await asyncio.gather(*[_fetch_ch(d) for d in dex_order], return_exceptions=False)
         av_sum = sum(av for av, _ in perp_results)
         wd_sum = sum(wd for _, wd in perp_results)
+
         total_collateral = av_sum if av_sum != 0.0 else None
         available_collateral = wd_sum if wd_sum != 0.0 else None
 
@@ -426,7 +546,6 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
             payload_spot = {"type": "spotClearinghouseState", "user": address}
             async with s.post(url, json=payload_spot, headers=headers) as r:
                 spot_resp = await r.json()
-            
             balances_list = (spot_resp or {}).get("balances") or []
             balances = {}
             for b in balances_list:
@@ -440,15 +559,9 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
                 if name:
                     balances[name] = total
 
-            if balances:
-                spot_usdc = float(balances.get("USDC",0))
-                spot_usdh = float(balances.get("USDH",0))
-                spot_usdt = float(balances.get("USDT0",0))
-            else:
-                spot_usdc = None
-                spot_usdh = None
-                spot_usdt = None
-                
+            spot_usdc = float(balances.get("USDC", 0.0))   # USDC 없으면 0.0
+            spot_usdh = float(balances.get("USDH", 0.0))   # USDH 없으면 0.0
+            spot_usdt = float(balances.get("USDT0", 0.0))  # 항상 USDT0 사용
         except aiohttp.ContentTypeError:
             pass
         except Exception:
@@ -515,14 +628,9 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
         except Exception:
             balances = dict(getattr(self.ws_client, "balances", {}))
         
-        if balances:
-            spot_usdc = float(balances.get("USDC",0))
-            spot_usdh = float(balances.get("USDH",0))
-            spot_usdt = float(balances.get("USDT0",0))
-        else:
-            spot_usdc = None
-            spot_usdh = None
-            spot_usdt = None
+        spot_usdc = float(balances.get("USDC", 0.0))
+        spot_usdh = float(balances.get("USDH", 0.0))
+        spot_usdt = float(balances.get("USDT0", 0.0))
 
         return {
             "available_collateral": available_collateral,
@@ -534,9 +642,129 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
             },
         }
 
-    async def get_open_orders(self, symbol):
-        pass
+    def _normalize_open_order_rest(self, o: dict) -> Optional[dict]:
+        if not isinstance(o, dict):
+            return None
+        coin_raw = str(o.get("coin") or "")
+        # 스팟 페어 인덱스 → 'BASE/QUOTE'
+        if coin_raw.startswith("@"):
+            try:
+                pair_idx = int(coin_raw[1:])
+            except Exception:
+                return None
+            pair = (self.spot_asset_index_to_pair or {}).get(pair_idx)
+            if not pair:
+                return None
+            symbol = str(pair).upper()
+        else:
+            symbol = coin_raw.upper()
+
+        def fnum(x, default=None):
+            try:
+                return float(x)
+            except Exception:
+                return default
+
+        out = {
+            "order_id": o.get("oid"),
+            "symbol": symbol,
+            "side": "short" if o.get("side") == 'A' else 'long',
+            "price": fnum(o.get("limitPx")),
+            "size": fnum(o.get("sz")),
+            #"timestamp": int(o.get("timestamp")) if o.get("timestamp") is not None else None,
+            #"raw": o,
+        }
+        return out if out["order_id"] is not None and out["symbol"] else None
+
+    async def get_open_orders_ws(self, symbol: str, timeout: float = 2.0) -> Optional[List[dict]]:
+        """
+        WS openOrders 캐시에서 주어진 심볼의 미체결 주문을 반환.
+        - 구독이 없으면 subscribe를 보장하고, 초기 스냅샷을 timeout까지 대기(폴링).
+        - 없으면 None.
+        """
+        address = self.vault_address or self.wallet_address
+        if not address:
+            return None
+
+        if not self.ws_client:
+            await self.create_ws_client()
+
+        if hasattr(self.ws_client, "wait_open_orders_ready"):
+            ok = await self.ws_client.wait_open_orders_ready(timeout=timeout)
+            if not ok:
+                # 이벤트가 없는 구현/타임아웃이면 폴링으로 후퇴
+                pass
+
+        # 폴링 대기(백업 경로)
+        deadline = time.monotonic() + float(timeout)
+        while time.monotonic() < deadline:
+            lst = getattr(self.ws_client, "open_orders", None)
+            if isinstance(lst, list):
+                break
+            await asyncio.sleep(0.05)
+
+        orders = list(getattr(self.ws_client, "open_orders", []) or [])
+        
+        if not orders:
+            return None
+        
+        sym = str(symbol).upper().strip()
+        filtered = [o for o in orders if (o.get("symbol") or "").upper() == sym]
+        return filtered or None
     
+    async def get_open_orders_rest(self, symbol: str, dex: str = "ALL_DEXS") -> Optional[List[dict]]:
+        """
+        REST openOrders 조회 후 주어진 심볼로 필터링하여 반환.
+        - 없으면 None.
+        """
+        address = self.vault_address or self.wallet_address
+        if not address:
+            return None
+
+        url = f"{self.http_base}/info"
+        headers = {"Content-Type": "application/json"}
+        payload = {"type": "openOrders", "user": address, "dex": dex}
+
+        s = self._session()
+        try:
+            async with s.post(url, json=payload, headers=headers) as r:
+                resp = await r.json()
+        except aiohttp.ContentTypeError:
+            return None
+        except Exception:
+            return None
+
+        # 응답 포맷: {"orders":[...]} 또는 바로 리스트([...]) 케이스 방어
+        orders_raw = []
+        if isinstance(resp, dict) and isinstance(resp.get("orders"), list):
+            orders_raw = resp.get("orders")
+        elif isinstance(resp, list):
+            orders_raw = resp
+        else:
+            return None
+
+        normalized = []
+        for o in orders_raw:
+            no = self._normalize_open_order_rest(o)
+            if no:
+                normalized.append(no)
+        if not normalized:
+            return None
+
+        sym = str(symbol).upper().strip()
+        filtered = [o for o in normalized if (o.get("symbol") or "").upper() == sym]
+        return filtered or None
+
+    async def get_open_orders(self, symbol: str) -> Optional[List[dict]]:
+        if self.fetch_by_ws:
+            try:
+                res = await self.get_open_orders_ws(symbol, timeout=2.0)
+                if res:
+                    return res
+            except Exception:
+                pass
+        return await self.get_open_orders_rest(symbol, dex="ALL_DEXS")
+
     async def cancel_orders(self, symbol):
         pass
 
@@ -676,9 +904,6 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
         if px is None:
             raise TimeoutError(f"WS perp price not ready for {key}")
         return float(px)
-
-    async def get_open_orders(self, symbol):
-        pass
 
 async def test():
     hl = HyperliquidExchange()
