@@ -35,7 +35,7 @@ async def create_exchange(exchange_platform: str, key_params=None):  # [MODIFIED
     elif exchange_platform == "lighter":
         return await Ex(key_params.account_id, key_params.private_key, key_params.api_key_id, key_params.l1_address).initialize_market_info()
     elif exchange_platform == "treadfi.hyperliquid":
-        return Ex(key_params.session_cookies, key_params.evm_private_key, key_params.main_wallet_address, key_params.sub_wallet_address, key_params.account_name)
+        return Ex(key_params.session_cookies, key_params.evm_private_key, key_params.main_wallet_address, key_params.sub_wallet_address, key_params.account_name, key_params.fetch_by_ws)
     elif exchange_platform == "variational":
         return Ex(key_params.evm_wallet_address, key_params.session_cookies, key_params.evm_private_key)
     elif exchange_platform == "pacifica":

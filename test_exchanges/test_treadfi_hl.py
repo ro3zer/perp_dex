@@ -17,14 +17,14 @@ async def main():
     print(res)
     
     # limit buy
-    #res = await treadfi_hl.create_order(symbol, 'sell', 0.00015, price=85000)
-    #print(res)
+    res = await treadfi_hl.create_order(symbol, 'buy', 0.00015, price=85000)
+    print(res)
     
     # logout
     #res = await treadfi_hl.logout()
     #print(res)
 
-    #await treadfi_hl.aclose()
+    await treadfi_hl.close()
     #print(treadfi_hl)
     #position = await treadfi_hl.get_position(symbol)
     #print(position)

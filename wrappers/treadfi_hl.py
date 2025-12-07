@@ -1,6 +1,5 @@
-# hyperliquid with treadfi (order by treadfi front api)
-# price and get position directly by hyperliquid ws (to do)
 from multi_perp_dex import MultiPerpDex, MultiPerpDexMixin
+from .hyperliquid_ws_client import HLWSClientRaw, WS_POOL
 from importlib import resources
 import aiohttp
 from aiohttp import web
@@ -10,22 +9,26 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, List
 from eth_account import Account  
 from eth_account.messages import encode_defunct  
+
+BASE_WS = "wss://api.hyperliquid.xyz/ws"
+STABLES = ["USDC","USDT0","USDH"]
 
 class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 	# To do: hyperliquid의 ws를 사용해서 position과 가격을 fetch하도록 수정할것
 	# tread.fi는 자체 front api를 사용하여 주문을 넣기때문에 builder code와 fee를 따로 설정안해도댐.
 	def __init__(
-        self,
-        session_cookies: Optional[Dict[str, str]] = None,
-        evm_private_key: Optional[str] = None,
+		self,
+		session_cookies: Optional[Dict[str, str]] = None,
+		evm_private_key: Optional[str] = None,
 		main_wallet_address: str = None, # required
-        sub_wallet_address: str = None, # optional
-        account_name: str = None, # required
+		sub_wallet_address: str = None, # optional
+		account_name: str = None, # required
+		fetch_by_ws: bool = True, # price and position
 		options: Any = None, # options
-    ):
+	):
 		# used for signing
 		self.main_wallet_address = main_wallet_address
 
@@ -36,6 +39,8 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 		self.walletAddress = None # ccxt style
 
 		self.account_name = account_name
+		self.fetch_by_ws = fetch_by_ws # use WS_POOL
+
 		self.url_base = "https://app.tread.fi/"
 		self._http: Optional[aiohttp.ClientSession] = None
 		self._logged_in = False
@@ -44,13 +49,37 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 		self._login_event: Optional[asyncio.Event] = None
 
 		self._http: Optional[aiohttp.ClientSession] = None
+		
+		self.ws_base = BASE_WS
+		self.spot_index_to_name = None
+		self.spot_name_to_index = None
+		self.spot_asset_index_to_pair = None
+		self.spot_asset_pair_to_index = None
+		self.spot_asset_index_to_bq = None
+		self.spot_prices = None
+		self.dex_list = ['hl', 'xyz', 'flx', 'vntl', 'hyna'] # default
+
+		self.spot_token_sz_decimals: Dict[str, int] = {}
+		self._perp_meta_inited: bool = False
+		self.perp_metas_raw: Optional[List[dict]] = None
+		# 키 → (asset_id, szDecimals)
+		#  - 메인(HL): 'BTC' (대문자)
+		#  - HIP-3:    'xyz:XYZ100' (원문 그대로)
+		self.perp_asset_map: Dict[str, Tuple[int, int]] = {}
+	
+		# WS 관련 내부 상태
+		self.ws_client: Optional[HLWSClientRaw] = None  # WS_POOL에서
+		self._ws_pool_key = None                        # comment: release 시 사용
+		
+		self._ws_init_lock = asyncio.Lock()             # comment: create_ws_client 중복 호출 방지
+		self.fetch_by_ws = fetch_by_ws
 
 		self.options = None # for purpose
 
 		self.login_html_path = os.environ.get(
-            "TREADFI_LOGIN_HTML",
-            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "wrappers/", "treadfi_login.html")),
-        )
+			"TREADFI_LOGIN_HTML",
+			os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "wrappers/", "treadfi_login.html")),
+		)
 		
 		# 쿠키 유효성 정리: "", None 은 없는 것으로 간주
 		self._normalize_or_clear_cookies()  # 빈 문자열/None -> 제거
@@ -60,6 +89,36 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 			print("No cookies are in given. Checking cached cookies in local dir..")
 			self._load_cached_cookies()
 	
+	async def init(self):
+		await self._init_spot_token_map() # spot meta
+		await self._get_dex_list()        # perpDexs 리스트 (webData3 순서)
+
+		try:
+			await self._init_perp_meta_cache()
+		except Exception:
+			pass
+		
+		try:
+			await WS_POOL.prime_shared_meta(
+				dex_order=self.dex_list or ["hl"],
+				idx2name=self.spot_index_to_name or {},
+				name2idx=self.spot_name_to_index or {},
+				pair_by_index=self.spot_asset_index_to_pair or {},
+				bq_by_index=self.spot_asset_index_to_bq or {},
+			)
+		except Exception:
+			pass
+		
+		# reverse id
+		self.spot_asset_pair_to_index = {
+			v: k for k, v in (self.spot_asset_index_to_pair or {}).items()
+		}
+		
+		if self.fetch_by_ws:
+			await self.create_ws_client()
+
+		return self
+
 	def _session(self) -> aiohttp.ClientSession:
 		if self._http is None or self._http.closed:
 			# [CHANGED] SSL 소켓 정리 강화 + keep-alive 강제 해제
@@ -71,7 +130,7 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 			)
 		return self._http
 	
-	async def aclose(self):  # [ADDED]
+	async def close(self):  # [ADDED]
 		if self._http and not self._http.closed:
 			await self._http.close()
 
@@ -82,9 +141,9 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 	async def __aexit__(self, exc_type, exc, tb):  # [ADDED]
 		await self.aclose()
 
-    # ----------------------------
-    # HTML (브라우저 지갑 서명 UI)
-    # ----------------------------
+	# ----------------------------
+	# HTML (브라우저 지갑 서명 UI)
+	# ----------------------------
 	def _login_html(self) -> str:
 		"""
 		최소 UI: 계정 요청 -> 메시지 수신 -> personal_sign -> 제출
@@ -308,8 +367,8 @@ alert('Signing/Submit failed: ' + e.message);
 		return self._cookies
 
 	# ---------------------------
-    # 로컬 캐시 유틸
-    # ---------------------------
+	# 로컬 캐시 유틸
+	# ---------------------------
 	def _find_project_root_from_cwd(self) -> Path:
 		"""
 		현재 작업 디렉터리에서 시작해 상위로 올라가며
