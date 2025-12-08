@@ -221,8 +221,7 @@ async def init_spot_token_map(s: aiohttp.ClientSession,
 
     return True
 
-async def init_perp_meta_cache(self, 
-                               s: aiohttp.ClientSession, 
+async def init_perp_meta_cache(s: aiohttp.ClientSession, 
                                perp_metas_raw: dict, 
                                perp_asset_map: dict,
                                ) -> bool:
@@ -260,6 +259,16 @@ async def init_perp_meta_cache(self,
             except Exception:
                 szd = 0
 
+            try:
+                max_lev = int(a.get("maxLeverage") or 1)
+            except Exception:
+                max_lev = 1
+
+            try:
+                isolated = int(a.get("onlyIsolated") or False)
+            except Exception:
+                isolated = False
+            
             if meta_idx == 0:
                 key = name.upper()                 # 메인(HL)
                 asset_id = int(local_idx)
@@ -267,6 +276,6 @@ async def init_perp_meta_cache(self,
                 key = name                         # HIP-3: 'dex:COIN'
                 asset_id = 100000 + meta_idx * 10000 + local_idx
 
-            perp_asset_map[key] = (asset_id, szd)
+            perp_asset_map[key] = (asset_id, szd, max_lev, isolated)
 
     return True

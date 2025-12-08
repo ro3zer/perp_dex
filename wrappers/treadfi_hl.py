@@ -45,6 +45,7 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 		self.walletAddress = None # ccxt style
 
 		self.account_name = account_name
+		self.account_id = None
 		self.fetch_by_ws = fetch_by_ws # use WS_POOL
 
 		self.url_base = "https://app.tread.fi/"
@@ -68,10 +69,12 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 		self.spot_token_sz_decimals: Dict[str, int] = {}
 		self._perp_meta_inited: bool = False
 		self.perp_metas_raw: Optional[List[dict]] = None
-		# 키 → (asset_id, szDecimals)
+		# 키 → (asset_id, szDecimals, maxLeverage, onlyIsolated)
 		#  - 메인(HL): 'BTC' (대문자)
 		#  - HIP-3:    'xyz:XYZ100' (원문 그대로)
-		self.perp_asset_map: Dict[str, Tuple[int, int]] = {}
+		self.perp_asset_map: Dict[str, Tuple[int, int, int, bool]] = {}
+
+		self._leverage_updated_to_max = False
 	
 		# WS 관련 내부 상태
 		self.ws_client: Optional[HLWSClientRaw] = None  # WS_POOL에서
@@ -99,6 +102,8 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 		login_md = await self.login()
 		if not self._logged_in:
 			raise RuntimeError(f"not logged-in {login_md}")
+		
+		self.account_id = await self.get_account_id()
 
 		s = self._session()
 		await init_spot_token_map(
@@ -629,6 +634,97 @@ alert('Signing/Submit failed: ' + e.message);
 			await self.aclose()
 		return result
 	
+
+	async def get_account_id(self) -> str | None:
+		"""
+		GET https://app.tread.fi/internal/sor/get_cached_account_balance
+		- query: account_names=<self.account_name>
+		- 응답의 balances[*].account_name == self.account_name 인 항목의 account_id 반환
+		- 없으면 None
+		"""
+		if not self._has_valid_cookies():
+			raise RuntimeError("not logged in: missing session cookies")
+
+		if not self.account_name:
+			raise ValueError("self.account_name is empty")
+
+		s = self._session()
+		url = self.url_base + "internal/sor/get_cached_account_balance"
+
+		params = {"account_names": self.account_name}
+		headers = {
+			"Accept": "*/*",
+			"X-CSRFToken": self._cookies["csrftoken"],
+			"Origin": self.url_base.rstrip("/"),
+			"Referer": self.url_base,
+			**self._cookie_header(),  # comment: 세션 쿠키 포함
+		}
+
+		async with s.get(url, params=params, headers=headers) as r:
+			r.raise_for_status()
+			# comment: content-type이 json이 아닐 수도 있어 예외 처리
+			try:
+				data = await r.json()
+			except Exception:
+				text = await r.text()
+				raise RuntimeError(f"get_account_id: unexpected response ({r.status}): {text[:200]}")
+
+		# 기대 구조: {"balances":[{...,"account_name":"...", "account_id":"..."}], ...}
+		balances = data.get("balances") or []
+		if not isinstance(balances, list):
+			return None
+
+		for item in balances:
+			if not isinstance(item, dict):
+				continue
+			if item.get("account_name") == self.account_name:
+				acc_id = item.get("account_id")
+				if isinstance(acc_id, str) and acc_id:
+					return acc_id
+
+		return None
+
+	async def update_leverage(self, symbol, leverage=None):
+		
+		if self._leverage_updated_to_max:
+			return {"message":"already updated!"}
+
+		symbol_ws = self._symbol_convert_for_ws(symbol)
+		_, _, max_leverage, only_isolated = self.perp_asset_map.get(symbol_ws, (None,None,1,False))
+		margin_mode = "ISOLATED" if only_isolated else "CROSS"
+		
+		if not leverage:
+			leverage = max_leverage
+
+		payload = {
+			"account_ids": [self.account_id],
+			"margin_mode": margin_mode,
+			"pair": symbol,
+			"leverage":leverage
+		}
+		#print(payload)
+		
+		headers = {
+			"Content-Type": "*/*",
+			"X-CSRFToken": self._cookies["csrftoken"],
+			"Origin": self.url_base.rstrip("/"),
+			"Referer": self.url_base,
+			**self._cookie_header(),
+		}
+
+		s = self._session()
+		async with s.post(self.url_base + "internal/sor/set_leverage", data=json.dumps(payload), headers=headers) as r:
+			txt = await r.text()
+			try:
+				data = json.loads(txt)
+			except Exception:
+				data = {"status": r.status, "text": txt}
+			
+			if data.get("message") == "Leverage changed successfully.":
+				self._leverage_updated_to_max = True
+			return data			
+			
+
 	def parse_orders(self, orders):
 		if not orders:
 			return []
@@ -663,6 +759,9 @@ alert('Signing/Submit failed: ' + e.message);
 		#await self.login()
 		if not self._has_valid_cookies():
 			raise RuntimeError("not logged in: missing session cookies")
+
+		res = await self.update_leverage(symbol)
+		#print(res)
 
 		s = self._session()
 

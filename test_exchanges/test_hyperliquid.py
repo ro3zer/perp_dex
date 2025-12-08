@@ -20,7 +20,7 @@ symbol2 = symbol_create('hyperliquid',coin2) # only perp atm
 
 #is_spot = False
 
-test_bool = [False, False, True]
+test_bool = [False, False, False]
 
 async def main():
     
@@ -32,7 +32,7 @@ async def main():
     HYPERLIQUID_KEY.builder_fee_pair["flx"] = 10 # example
     hyperliquid = await create_exchange('hyperliquid',HYPERLIQUID_KEY)
 
-    HYPERLIQUID_KEY2.fetch_by_ws = False # for rest api test
+    HYPERLIQUID_KEY2.fetch_by_ws = True # for rest api test
     hyperliquid2 = await create_exchange('hyperliquid',HYPERLIQUID_KEY2)
 
     # superstack test

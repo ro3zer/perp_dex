@@ -9,12 +9,14 @@ from keys.pk_treadfi_hl import TREADFIHL_KEY
 # tread.fi it self can't close a position of small size
 # they will fix it, so it's not a bug in this code
 
-coin = 'BTC'
-amount = 0.0002
+coin = 'xyz:XYZ100'
+amount = 0.002
 symbol = symbol_create('treadfi.hyperliquid',coin) # only perp atm
 
 async def main():
     treadfi_hl = await create_exchange('treadfi.hyperliquid',TREADFIHL_KEY)
+    
+    print("account_name:", treadfi_hl.account_name, "\naccount_id:", treadfi_hl.account_id)
     
     price = await treadfi_hl.get_mark_price(symbol) #,is_spot=is_spot)
     print(price)
