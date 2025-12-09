@@ -4,6 +4,7 @@ import aiohttp
 
 BASE_URL = "https://api.hyperliquid.xyz"
 STABLES = ["USDC","USDT0","USDH","USDE"]
+STABLES_DISPLAY = ["USDC","USDT","USDH","USDE"]
 
 def _strip_decimal_trailing_zeros(s: str) -> str:
     """

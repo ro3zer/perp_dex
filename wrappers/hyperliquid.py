@@ -8,7 +8,8 @@ from mpdex.utils.common_hyperliquid import (
 	init_spot_token_map,
 	get_dex_list,
 	init_perp_meta_cache,
-	STABLES
+	STABLES,
+	STABLES_DISPLAY
 )
 import json
 from typing import Dict, Optional, List, Dict, Tuple
@@ -456,6 +457,8 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 			# {'status': 'ok', 'response': {'type': 'default'}}
 			if resp.get("status") == 'ok':
 				self._leverage_updated_to_max = True
+		
+		await asyncio.sleep(0.1) # 잠시 대기
 		try:
 			return resp
 		except Exception as e:
@@ -773,11 +776,7 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 			return {
 				"available_collateral":None,
 				"total_collateral": None,
-				"spot":{
-					"USDH":None,
-					"USDC":None,
-					"USDT":None
-				}
+				"spot": {disp: None for disp in STABLES_DISPLAY},
 			}
 	
 	async def get_collateral_rest(self):
@@ -799,7 +798,7 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 			return {
 				"available_collateral": None,
 				"total_collateral": None,
-				"spot": {"USDH": None, "USDC": None, "USDT": None},
+				"spot": {disp: None for disp in STABLES_DISPLAY},
 			}
 
 		url = f"{self.http_base}/info"
@@ -842,7 +841,7 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 		available_collateral = wd_sum if wd_sum != 0.0 else None
 
 		# ---------------- Spot: spotClearinghouseState ----------------
-		spot_usdc = spot_usdh = spot_usdt = None
+		spot_map = {disp: 0.0 for disp in STABLES_DISPLAY}  # 기본 0.0, 표기는 DISPLAY
 		try:
 			payload_spot = {"type": "spotClearinghouseState", "user": address}
 			async with s.post(url, json=payload_spot, headers=headers) as r:
@@ -860,9 +859,9 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 				if name:
 					balances[name] = total
 
-			spot_usdc = float(balances.get("USDC", 0.0))   # USDC 없으면 0.0
-			spot_usdh = float(balances.get("USDH", 0.0))   # USDH 없으면 0.0
-			spot_usdt = float(balances.get("USDT0", 0.0))  # 항상 USDT0 사용
+			for onchain, disp in zip(STABLES, STABLES_DISPLAY):
+				spot_map[disp] = float(balances.get(onchain, 0.0))
+
 		except aiohttp.ContentTypeError:
 			pass
 		except Exception:
@@ -871,11 +870,7 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 		return {
 			"available_collateral": available_collateral,
 			"total_collateral": total_collateral,
-			"spot": {
-				"USDH": spot_usdh,
-				"USDC": spot_usdc,
-				"USDT": spot_usdt,
-			},
+			"spot": spot_map,
 		}
 	
 	async def get_collateral_ws(self, timeout: float = 2.0):
@@ -888,14 +883,13 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 			return {
 				"available_collateral": None,
 				"total_collateral": None,
-				"spot": {"USDH": None, "USDC": None, "USDT": None},
+				"spot": {disp: None for disp in STABLES_DISPLAY},
 			}
 
-		# 1) webData3/spotState 첫 스냅샷을 짧게 폴링 대기
 		deadline = time.monotonic() + float(timeout)
 		while time.monotonic() < deadline:
-			has_margin = bool(getattr(self.ws_client, "margin_by_dex", {}))
-			has_bal = bool(getattr(self.ws_client, "balances", {}))
+			has_margin = bool(self.ws_client.get_margin_by_dex_for_user(address))
+			has_bal = bool(self.ws_client.get_balances_by_user(address))
 			if has_margin and has_bal:
 				break
 			await asyncio.sleep(0.05)
@@ -905,14 +899,14 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 		wd_sum = sum((m or {}).get("withdrawable", 0.0) for m in margin.values())
 
 		balances = self.ws_client.get_balances_by_user(address)
-		spot_usdc = float(balances.get("USDC", 0.0))
-		spot_usdh = float(balances.get("USDH", 0.0))
-		spot_usdt = float(balances.get("USDT0", 0.0))
+		spot_map = {}
+		for onchain, disp in zip(STABLES, STABLES_DISPLAY):
+			spot_map[disp] = float(balances.get(onchain, 0.0))
 
 		return {
 			"available_collateral": (wd_sum if wd_sum != 0.0 else None),
 			"total_collateral": (av_sum if av_sum != 0.0 else None),
-			"spot": {"USDH": spot_usdh, "USDC": spot_usdc, "USDT": spot_usdt},
+			"spot": spot_map,
 		}
 
 	def _normalize_open_order_rest(self, o: dict) -> Optional[dict]:
