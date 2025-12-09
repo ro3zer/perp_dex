@@ -7,7 +7,8 @@ from mpdex.utils.common_hyperliquid import (
 	format_size,
 	init_spot_token_map,
 	get_dex_list,
-	init_perp_meta_cache
+	init_perp_meta_cache,
+	STABLES
 )
 import json
 from typing import Dict, Optional, List, Dict, Tuple, Any
@@ -16,6 +17,9 @@ from aiohttp import TCPConnector
 import asyncio
 import time
 from eth_account import Account
+
+BASE_URL = "https://api.hyperliquid.xyz"
+BASE_WS = "wss://api.hyperliquid.xyz/ws"
 
 # to do: signing method 수정
 
@@ -76,10 +80,6 @@ async def _raise_if_bad_response(resp: aiohttp.ClientResponse) -> None:
 	# JSON 에러 포맷이 일정치 않으므로 원문을 그대로 노출
 	raise RuntimeError(f"HTTP {resp.status}: {text[:400]}...")
 
-BASE_URL = "https://api.hyperliquid.xyz"
-BASE_WS = "wss://api.hyperliquid.xyz/ws"
-STABLES = ["USDC","USDT0","USDH"]
-
 class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 	# superstack은 hyperliquid perp를 사용하지만, 자체 지갑 provider를 사용하여
 	# signing 방식은 지갑 api를 사용해야함
@@ -105,21 +105,21 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 		
 		self.http_base = BASE_URL
 		self.ws_base = BASE_WS
-		self.spot_index_to_name = None
-		self.spot_name_to_index = None
-		self.spot_asset_index_to_pair = None
-		self.spot_asset_pair_to_index = None
-		self.spot_asset_index_to_bq = None
+		self.spot_index_to_name = {}
+		self.spot_name_to_index = {}
+		self.spot_asset_index_to_pair = {}
+		self.spot_asset_pair_to_index = {}
+		self.spot_asset_index_to_bq = {}
 		self.spot_prices = None
 		self.dex_list = ['hl', 'xyz', 'flx', 'vntl', 'hyna'] # default
 
 		self.spot_token_sz_decimals: Dict[str, int] = {}
 		self._perp_meta_inited: bool = False
-		self.perp_metas_raw: Optional[List[dict]] = None
-		# 키 → (asset_id, szDecimals, maxLeverage, onlyIsolated)
+		self.perp_metas_raw: Optional[List[dict]] = []
+		# 키 → (asset_id, szDecimals, maxLeverage, onlyIsolated, collateralToken)
 		#  - 메인(HL): 'BTC' (대문자)
 		#  - HIP-3:    'xyz:XYZ100' (원문 그대로)
-		self.perp_asset_map: Dict[str, Tuple[int, int, int, bool]] = {}
+		self.perp_asset_map: Dict[str, Tuple[int, int, int, bool, int]] = {}
 		self._leverage_updated_to_max = False
 		self._http =  None
 
@@ -258,6 +258,13 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 
 		return self
 	
+	def get_perp_quote(self, symbol):
+		raw = str(symbol).strip()
+		dex, coin_key = parse_hip3_symbol(raw)
+		_, _, _, _, quote_id = self.perp_asset_map.get(coin_key,{})
+		quote = self.spot_index_to_name.get(quote_id,'USDC')
+		return quote
+	
 	# 캐시 조회로 변경
 	async def _resolve_perp_asset_and_szdec(self, dex: Optional[str], coin_key: str) -> tuple[Optional[int], int]:
 		"""
@@ -266,7 +273,7 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 		- dex='xyz'(HIP-3):   key = coin_key(원문 'xyz:COIN')
 		"""
 		key = coin_key if dex else coin_key.upper()
-		return self.perp_asset_map.get(key, (None, 0, 1, False))
+		return self.perp_asset_map.get(key, (None, 0, 1, False, 0))
 
 	# 심볼 → asset id 해석(spot/perp 공용)
 	async def _resolve_asset_id_for_symbol(self, symbol: str, *, is_spot: bool) -> int:
@@ -414,7 +421,7 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 		
 		raw = str(symbol).strip()
 		dex, coin_key = parse_hip3_symbol(raw)
-		asset_id, _, max_leverage, isolated = await self._resolve_perp_asset_and_szdec(dex, coin_key)
+		asset_id, _, max_leverage, isolated, _ = await self._resolve_perp_asset_and_szdec(dex, coin_key)
 		if not leverage:
 			leverage = max_leverage
 		#print("max_leverage:",max_leverage)

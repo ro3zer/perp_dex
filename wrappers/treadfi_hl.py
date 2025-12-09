@@ -1,8 +1,10 @@
 from multi_perp_dex import MultiPerpDex, MultiPerpDexMixin
 from mpdex.utils.common_hyperliquid import (
+	parse_hip3_symbol,
 	init_spot_token_map,
 	get_dex_list,
-	init_perp_meta_cache
+	init_perp_meta_cache,
+	STABLES
 )
 from .hyperliquid_ws_client import HLWSClientRaw, WS_POOL
 from importlib import resources
@@ -20,7 +22,6 @@ from eth_account.messages import encode_defunct
 
 HL_BASE_URL = "https://api.hyperliquid.xyz"
 BASE_WS = "wss://api.hyperliquid.xyz/ws"
-STABLES = ["USDC","USDT0","USDH"]
 
 class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 	# To do: hyperliquid의 ws를 사용해서 position과 가격을 fetch하도록 수정할것
@@ -58,21 +59,21 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 		self._http: Optional[aiohttp.ClientSession] = None
 		
 		self.ws_base = BASE_WS
-		self.spot_index_to_name = None
-		self.spot_name_to_index = None
-		self.spot_asset_index_to_pair = None
-		self.spot_asset_pair_to_index = None
-		self.spot_asset_index_to_bq = None
+		self.spot_index_to_name = {}
+		self.spot_name_to_index = {}
+		self.spot_asset_index_to_pair = {}
+		self.spot_asset_pair_to_index = {}
+		self.spot_asset_index_to_bq = {}
 		self.spot_prices = None
 		self.dex_list = ['hl', 'xyz', 'flx', 'vntl', 'hyna'] # default
 
 		self.spot_token_sz_decimals: Dict[str, int] = {}
 		self._perp_meta_inited: bool = False
-		self.perp_metas_raw: Optional[List[dict]] = None
-		# 키 → (asset_id, szDecimals, maxLeverage, onlyIsolated)
+		self.perp_metas_raw: Optional[List[dict]] = []
+		# 키 → (asset_id, szDecimals, maxLeverage, onlyIsolated, collateralToken)
 		#  - 메인(HL): 'BTC' (대문자)
 		#  - HIP-3:    'xyz:XYZ100' (원문 그대로)
-		self.perp_asset_map: Dict[str, Tuple[int, int, int, bool]] = {}
+		self.perp_asset_map: Dict[str, Tuple[int, int, int, bool, int]] = {}
 
 		self._leverage_updated_to_max = False
 	
@@ -145,6 +146,13 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 			await self._create_ws_client()
 
 		return self
+	
+	def get_perp_quote(self, symbol):
+		raw = str(self._symbol_convert_for_ws(symbol)).strip()
+		dex, coin_key = parse_hip3_symbol(raw)
+		_, _, _, _, quote_id = self.perp_asset_map.get(coin_key,{})
+		quote = self.spot_index_to_name.get(quote_id,'USDC')
+		return quote
 
 	def _symbol_convert_for_ws(self, symbol:str):
 		# perp -> BTC:PERP-USDC / xyz_XYZ100:PERP-USDC
@@ -690,7 +698,7 @@ alert('Signing/Submit failed: ' + e.message);
 			return {"message":"already updated!"}
 
 		symbol_ws = self._symbol_convert_for_ws(symbol)
-		_, _, max_leverage, only_isolated = self.perp_asset_map.get(symbol_ws, (None,None,1,False))
+		_, _, max_leverage, only_isolated, _ = self.perp_asset_map.get(symbol_ws, (None,None,1,False))
 		margin_mode = "ISOLATED" if only_isolated else "CROSS"
 		
 		if not leverage:

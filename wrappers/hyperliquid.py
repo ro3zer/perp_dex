@@ -7,7 +7,8 @@ from mpdex.utils.common_hyperliquid import (
 	format_size,
 	init_spot_token_map,
 	get_dex_list,
-	init_perp_meta_cache
+	init_perp_meta_cache,
+	STABLES
 )
 import json
 from typing import Dict, Optional, List, Dict, Tuple
@@ -20,7 +21,6 @@ from .hl_sign import sign_l1_action as hl_sign_l1_action
 
 BASE_URL = "https://api.hyperliquid.xyz"
 BASE_WS = "wss://api.hyperliquid.xyz/ws"
-STABLES = ["USDC","USDT0","USDH"]
 
 class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 	def __init__(self, 
@@ -61,21 +61,20 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 		
 		self.http_base = BASE_URL
 		self.ws_base = BASE_WS
-		self.spot_index_to_name = None
-		self.spot_name_to_index = None
-		self.spot_asset_index_to_pair = None
-		self.spot_asset_pair_to_index = None
-		self.spot_asset_index_to_bq = None
-		self.spot_prices = None
+		self.spot_index_to_name = {}
+		self.spot_name_to_index = {}
+		self.spot_asset_index_to_pair = {}
+		self.spot_asset_pair_to_index = {}
+		self.spot_asset_index_to_bq = {}
 		self.dex_list = ['hl', 'xyz', 'flx', 'vntl', 'hyna'] # default
 
 		self.spot_token_sz_decimals: Dict[str, int] = {}
 		self._perp_meta_inited: bool = False
-		self.perp_metas_raw: Optional[List[dict]] = None
-		# 키 → (asset_id, szDecimals, maxLeverage)
+		self.perp_metas_raw: Optional[List[dict]] = []
+		# 키 → (asset_id, szDecimals, maxLeverage, collateralToken)
 		#  - 메인(HL): 'BTC' (대문자)
 		#  - HIP-3:    'xyz:XYZ100' (원문 그대로)
-		self.perp_asset_map: Dict[str, Tuple[int, int, int, bool]] = {}
+		self.perp_asset_map: Dict[str, Tuple[int, int, int, bool, int]] = {}
 
 		self._http =  None
 
@@ -87,6 +86,16 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 		self.fetch_by_ws = fetch_by_ws
 		self.FrontendMarket = FrontendMarket
 		#self.signing_method = signing_method
+
+	def get_perp_quote(self, symbol):
+		raw = str(symbol).strip()
+		dex, coin_key = parse_hip3_symbol(raw)
+		#print(coin_key, self.perp_asset_map.get(coin_key,{}))
+		
+		_, _, _, _, quote_id = self.perp_asset_map.get(coin_key,{})
+		#print(quote_id,self.spot_index_to_name.get(quote_id,'USDC'))
+		quote = self.spot_index_to_name.get(quote_id,'USDC')
+		return quote
 
 	def _get_builder_code(self, builder_code:str = None):
 		if builder_code:
@@ -211,7 +220,6 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 			self.spot_token_sz_decimals,
 			) # spot meta
 		self.dex_list = await get_dex_list(s)        # perpDexs 리스트 (webData3 순서)
-
 		try:
 			await init_perp_meta_cache(
 				s, 
@@ -250,7 +258,7 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 		- dex='xyz'(HIP-3):   key = coin_key(원문 'xyz:COIN')
 		"""
 		key = coin_key if dex else coin_key.upper()
-		return self.perp_asset_map.get(key, (None, 0, 1, False))
+		return self.perp_asset_map.get(key, (None, 0, 1, False, 0))
 
 	# 심볼 → asset id 해석(spot/perp 공용)
 	async def _resolve_asset_id_for_symbol(self, symbol: str, *, is_spot: bool) -> int:
@@ -419,7 +427,7 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 		
 		raw = str(symbol).strip()
 		dex, coin_key = parse_hip3_symbol(raw)
-		asset_id, _, max_leverage, isolated = await self._resolve_perp_asset_and_szdec(dex, coin_key)
+		asset_id, _, max_leverage, isolated, _ = await self._resolve_perp_asset_and_szdec(dex, coin_key)
 		if not leverage:
 			leverage = max_leverage
 		#print("max_leverage:",max_leverage)

@@ -3,6 +3,7 @@ from decimal import Decimal, ROUND_HALF_UP, ROUND_UP, ROUND_DOWN
 import aiohttp
 
 BASE_URL = "https://api.hyperliquid.xyz"
+STABLES = ["USDC","USDT0","USDH","USDE"]
 
 def _strip_decimal_trailing_zeros(s: str) -> str:
     """
@@ -145,9 +146,9 @@ async def init_spot_token_map(s: aiohttp.ClientSession,
             except Exception as ex:
                 pass
         #print(name,idx)
-    spot_index_to_name = idx2name
-    spot_name_to_index = name2idx
-    spot_token_sz_decimals = token_szdec
+    spot_index_to_name.update(idx2name)
+    spot_name_to_index.update(name2idx)
+    spot_token_sz_decimals.update(token_szdec)
     
     # 2) 페어 맵(spotInfo.index -> 'BASE/QUOTE' 및 (BASE, QUOTE))
     pair_by_index: Dict[int, str] = {}
@@ -216,8 +217,8 @@ async def init_spot_token_map(s: aiohttp.ClientSession,
             fail += 1
         #print(base_name,quote_name)
     
-    spot_asset_index_to_pair = pair_by_index
-    spot_asset_index_to_bq = bq_by_index
+    spot_asset_index_to_pair.update(pair_by_index)
+    spot_asset_index_to_bq.update(bq_by_index)
 
     return True
 
@@ -240,12 +241,16 @@ async def init_perp_meta_cache(s: aiohttp.ClientSession,
         metas = []
 
     # 원본 저장
-    perp_metas_raw = metas if isinstance(metas, list) else []
+    perp_metas_raw.clear()
+    perp_metas_raw.extend(metas if isinstance(metas, list) else [])
+    #print(perp_metas_raw)
     
     perp_asset_map.clear()
+    
 
     for meta_idx, meta in enumerate(perp_metas_raw):
         uni = (meta or {}).get("universe") or []
+        collateral_token_id = (meta or {}).get("collateralToken") or 0
         for local_idx, a in enumerate(uni):
             if not isinstance(a, dict):
                 continue
@@ -276,6 +281,6 @@ async def init_perp_meta_cache(s: aiohttp.ClientSession,
                 key = name                         # HIP-3: 'dex:COIN'
                 asset_id = 100000 + meta_idx * 10000 + local_idx
 
-            perp_asset_map[key] = (asset_id, szd, max_lev, isolated)
+            perp_asset_map[key] = (asset_id, szd, max_lev, isolated, collateral_token_id)
 
     return True
