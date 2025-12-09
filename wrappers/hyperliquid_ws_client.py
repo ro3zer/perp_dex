@@ -161,6 +161,9 @@ class HLWSClientRaw:
         self._user_balances: Dict[str, Dict[str, float]] = {}                         # user -> {token->amt}
         self._user_open_orders: Dict[str, List[Dict[str, Any]]] = {}                  # user -> list[order]
 
+        self._post_id = 0                            # comment: post 요청용 증가 id
+        self._post_waiters: Dict[int, asyncio.Future] = {}  # comment: id -> Future
+
         # --------- active_user 뷰(기존 코드 호환용) ---------
         #self.margin_by_dex: Dict[str, Dict[str, float]] = {}
         #self.positions_by_dex_norm: Dict[str, Dict[str, Dict[str, Any]]] = {}
@@ -183,7 +186,45 @@ class HLWSClientRaw:
         self._send_lock = asyncio.Lock()
         self._active_subs: set[str] = set()
         self._price_events: Dict[str, asyncio.Event] = {}
+    
+    def _next_post_id(self) -> int:
+        self._post_id += 1
+        return self._post_id
+    
+    async def _post(self, req_type: str, payload: dict, timeout: float = 6.0) -> dict:
+        """
+        WS 'post' 요청 공통 루틴.
+        req_type: 'info' | 'action'
+        payload:  Info 또는 Exchange payload
+        반환: 서버 응답의 data.response(dict)
+        """
+        if not self.conn:
+            raise RuntimeError("WebSocket is not connected")
+        req_id = self._next_post_id()
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._post_waiters[req_id] = fut
+        msg = {
+            "method": "post",
+            "id": req_id,
+            "request": {
+                "type": req_type,
+                "payload": payload,
+            },
+        }
+        await self.conn.send(json_dumps(msg))
+        try:
+            resp = await asyncio.wait_for(fut, timeout=timeout)
+            # resp는 {"type":"info"|"action"|"error","payload": ...}
+            return resp
+        finally:
+            self._post_waiters.pop(req_id, None)
 
+    async def post_info(self, payload: dict, timeout: float = 6.0) -> dict:
+        return await self._post("info", payload, timeout=timeout)
+
+    async def post_action(self, payload: dict, timeout: float = 8.0) -> dict:
+        return await self._post("action", payload, timeout=timeout)
+    
     # ---------- 유저 구독/뷰 관리 ----------
     async def ensure_user_streams(self, address: Optional[str]) -> None:
         """
@@ -987,8 +1028,18 @@ class HLWSClientRaw:
             else:
                 ws_logger.error(f"[WS error] {data_str}")
             return
+        
         if ch == "pong":
             ws_logger.debug("received pong")
+            return
+        
+        if ch == "post":
+            data = msg.get("data") or {}
+            req_id = data.get("id")
+            resp = data.get("response") or {}
+            fut = self._post_waiters.get(int(req_id)) if isinstance(req_id, int) else None
+            if fut and not fut.done():
+                fut.set_result(resp)   # resp: {"type": "...", "payload": {... or str}}
             return
         
         if ch == "openOrders":

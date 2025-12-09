@@ -20,7 +20,7 @@ symbol2 = symbol_create('hyperliquid',coin2) # only perp atm
 
 #is_spot = False
 
-test_bool = [True, True, True]
+test_bool = [True, False, False]
 
 async def main():
     
@@ -33,13 +33,28 @@ async def main():
     hyperliquid = await create_exchange('hyperliquid',HYPERLIQUID_KEY)
     await asyncio.sleep(0.2)
     
+    # superstack test
+    superstack = await create_exchange('superstack',SUPERSTACK_KEY)
+    await asyncio.sleep(0.2)
+    
+    '''
+    while True:
+        res = await hyperliquid.update_leverage(symbol)
+        print(res)
+        print(hyperliquid._leverage_updated_to_max)
+        res = await superstack.update_leverage(symbol)
+        print(res)
+        print(superstack._leverage_updated_to_max)
+        await asyncio.sleep(1)
+    return
+    '''
+    
+    
     HYPERLIQUID_KEY2.fetch_by_ws = True # for rest api test
     hyperliquid2 = await create_exchange('hyperliquid',HYPERLIQUID_KEY2)
     await asyncio.sleep(0.2)
 
-    # superstack test
-    superstack = await create_exchange('superstack',SUPERSTACK_KEY)
-    await asyncio.sleep(0.2)
+    
 
     price1 = await hyperliquid.get_mark_price(symbol) #,is_spot=is_spot)
     print(price1)
