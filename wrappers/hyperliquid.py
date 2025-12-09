@@ -166,21 +166,30 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 			pair_src = None
 			idx = 0 if str(order_type).lower() == "limit" else 1
 			m = self.builder_fee_pair or {}
+
 			# 1) 개별 DEX(hip3) 키
 			if dex and dex in m:
 				a, b = self._parse_fee_pair(m[dex])
 				pair_src = (a, b)
+				return int(pair_src[idx])
+
 			# 2) 공통 DEX 키
 			if pair_src is None and "dex" in m:
 				a, b = self._parse_fee_pair(m["dex"])
 				pair_src = (a, b)
+				return int(pair_src[idx])
+
 			# 3) 메인/기본 키
 			if pair_src is None and "base" in m:
 				a, b = self._parse_fee_pair(m["base"])
 				pair_src = (a, b)
+				return int(pair_src[idx])
+
 			if pair_src is None:
 				return None
+			
 			return int(pair_src[idx])
+		
 		except Exception:
 			return None
 	
