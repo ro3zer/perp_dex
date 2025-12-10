@@ -7,10 +7,8 @@ from mpdex.utils.common_hyperliquid import (
 	STABLES
 )
 from .hyperliquid_ws_client import HLWSClientRaw, WS_POOL
-from importlib import resources
 import aiohttp
-from aiohttp import web
-from aiohttp import TCPConnector
+from aiohttp import web, TCPConnector
 import asyncio
 import json
 import os
@@ -155,7 +153,7 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 			raw = str(symbol).strip()
 
 		dex, coin_key = parse_hip3_symbol(raw)
-		_, _, _, _, quote_id = self.perp_asset_map.get(coin_key,{})
+		_, _, _, _, quote_id = self.perp_asset_map.get(coin_key,(None, 0, 1, False, 0))
 		quote = self.spot_index_to_name.get(quote_id,'USDC')
 		return quote
 
@@ -226,13 +224,14 @@ class TreadfiHlExchange(MultiPerpDexMixin, MultiPerpDex):
 			)
 		return self._http
 	
-	async def close(self):  # [ADDED]
+	async def close(self):
 		if self._http and not self._http.closed:
 			await self._http.close()
-		if self._ws_pool_key:
+		if self._ws_pool_key and self.ws_client:
 			ws_url, addr = self._ws_pool_key
 			try:
-				await WS_POOL.release(ws_url=ws_url, address=addr)  # comment: 참조 카운트 -1
+				# comment: 특정 소켓을 명시적으로 해제
+				await WS_POOL.release(ws_url=ws_url, address=addr, client=self.ws_client)
 			except Exception:
 				pass
 			finally:

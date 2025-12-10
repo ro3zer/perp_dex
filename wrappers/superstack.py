@@ -8,15 +8,15 @@ from mpdex.utils.common_hyperliquid import (
 	init_spot_token_map,
 	get_dex_list,
 	init_perp_meta_cache,
+	extract_order_id,
+	extract_cancel_status,
 	STABLES
 )
-import json
-from typing import Dict, Optional, List, Dict, Tuple, Any
+from typing import Dict, Optional, List, Tuple, Any
 import aiohttp
 from aiohttp import TCPConnector
 import asyncio
 import time
-from eth_account import Account
 
 BASE_URL = "https://api.hyperliquid.xyz"
 BASE_WS = "wss://api.hyperliquid.xyz/ws"
@@ -211,11 +211,11 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 		# HTTP 세션 종료 + WS 풀 release
 		if self._http and not self._http.closed:
 			await self._http.close()
-		# WS 풀 release: 이 인스턴스에서 acquire한 경우에만 해제
-		if self._ws_pool_key:
+		if self._ws_pool_key and self.ws_client:
 			ws_url, addr = self._ws_pool_key
 			try:
-				await WS_POOL.release(ws_url=ws_url, address=addr)  # comment: 참조 카운트 -1
+				# comment: 특정 소켓을 명시적으로 해제
+				await WS_POOL.release(ws_url=ws_url, address=addr, client=self.ws_client)
 			except Exception:
 				pass
 			finally:
@@ -267,7 +267,7 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 	def get_perp_quote(self, symbol):
 		raw = str(symbol).strip()
 		dex, coin_key = parse_hip3_symbol(raw)
-		_, _, _, _, quote_id = self.perp_asset_map.get(coin_key,{})
+		_, _, _, _, quote_id = self.perp_asset_map.get(coin_key,(None, 0, 1, False, 0))
 		quote = self.spot_index_to_name.get(quote_id,'USDC')
 		return quote
 	
@@ -299,73 +299,6 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 			raise RuntimeError(f"asset index not found for {raw}")
 		return int(asset_id)
 
-	
-	
-	def _extract_order_id(self, raw) -> Optional[str]:
-		"""
-		- 성공: oid를 찾아 문자열로 반환
-		- 실패(응답 내 error 존재): RuntimeError를 발생시켜 상위에서 처리
-		지원하는 오류 키: 'error', 'reason', 'message'
-		"""
-		def _find_oid(node):
-			# 중첩 트리에서 'oid'를 찾아 반환
-			if isinstance(node, dict):
-				if "oid" in node and isinstance(node["oid"], (int, str)):
-					return node["oid"]
-				for v in node.values():
-					r = _find_oid(v)
-					if r is not None:
-						return r
-			elif isinstance(node, list):
-				for it in node:
-					r = _find_oid(it)
-					if r is not None:
-						return r
-			return None
-
-		def _collect_errors(node, sink: list):
-			# 중첩 트리에서 에러 메시지를 수집
-			if isinstance(node, dict):
-				for k, v in node.items():
-					if k in ("error", "reason", "message") and isinstance(v, str) and v.strip():
-						sink.append(v.strip())
-					elif isinstance(v, (dict, list)):
-						_collect_errors(v, sink)
-			elif isinstance(node, list):
-				for it in node:
-					_collect_errors(it, sink)
-
-		# 응답 루트 정규화(list/단일 dict 모두)
-		obj = raw[0] if isinstance(raw, list) and raw else raw
-		if not isinstance(obj, dict):
-			return None
-
-		# 표준 경로 추출
-		resp = (obj.get("response") or obj) if isinstance(obj, dict) else {}
-		data = (resp.get("data") or {}) if isinstance(resp, dict) else {}
-
-		# 1) 에러 우선 탐지: statuses 또는 어디든 중첩된 error/reason/message
-		errors: list[str] = []
-		statuses = data.get("statuses") or resp.get("statuses") or obj.get("statuses") or []
-		if statuses:
-			_collect_errors(statuses, errors)
-		# 상위/다른 중첩에만 에러가 존재할 수도 있음 → 전체 트리 스캔 보강
-		if not errors:
-			_collect_errors(obj, errors)
-
-		if errors:
-			# 첫 메시지만 사용(원하면 " | ".join(errors)로 합치세요)
-			raise RuntimeError(errors[0])
-
-		# 2) oid 탐색(여러 경로 시도)
-		oid = _find_oid(data)
-		if oid is None:
-			oid = _find_oid(resp)
-		if oid is None:
-			oid = _find_oid(obj)
-
-		return str(oid) if oid is not None else None
-	
 	def _spot_base_sz_decimals(self, pair: str) -> int:
 		"""
 		pair: 'BASE/QUOTE'
@@ -633,7 +566,7 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 				r.raise_for_status()
 				resp = await r.json()
 			try:
-				return self._extract_order_id(resp) # only id
+				return extract_order_id(resp) # only id
 			except Exception as e:
 				return str(e)
 
@@ -698,7 +631,7 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 			r.raise_for_status()
 			resp = await r.json()
 		try:
-			return self._extract_order_id(resp) # only id
+			return extract_order_id(resp) # only id
 		except Exception as e:
 			return str(e)
 
@@ -761,7 +694,7 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 		if not address:
 			return None
 		if not self.ws_client:
-			await self.create_ws_client()
+			await self._create_ws_client()
 		deadline = time.monotonic() + timeout
 		while time.monotonic() < deadline:
 			if self.ws_client.get_positions_norm_for_user(address):
@@ -960,7 +893,7 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 		if not address:
 			return {"available_collateral": None, "total_collateral": None, "spot": {"USDH": 0.0, "USDC": 0.0, "USDT": 0.0}}
 		if not self.ws_client:
-			await self.create_ws_client()
+			await self._create_ws_client()
 		# 최초 스냅샷 폴링
 		deadline = time.monotonic() + timeout
 		while time.monotonic() < deadline:
@@ -1027,7 +960,7 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 		if not address:
 			return None
 		if not self.ws_client:
-			await self.create_ws_client()
+			await self._create_ws_client()
 
 		await self.ws_client.ensure_user_streams(address)  # 보장
 		await self.ws_client.wait_open_orders_ready(timeout=timeout, address=address)
@@ -1092,45 +1025,6 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 				pass
 		return await self.get_open_orders_rest(symbol, dex="ALL_DEXS")
 
-	# cancel 응답 파서: 성공/오류 판정
-	def _extract_cancel_status(self, raw) -> bool:
-		"""
-		성공 시 True, 오류 메시지 있으면 RuntimeError(error)를 발생시킵니다.
-		"""
-		def _collect_errors(node, sink: list):
-			if isinstance(node, dict):
-				for k, v in node.items():
-					if k in ("error", "reason", "message") and isinstance(v, str) and v.strip():
-						sink.append(v.strip())
-					elif isinstance(v, (dict, list)):
-						_collect_errors(v, sink)
-			elif isinstance(node, list):
-				for it in node:
-					_collect_errors(it, sink)
-
-		obj = raw[0] if isinstance(raw, list) and raw else raw
-		if not isinstance(obj, dict):
-			raise RuntimeError("invalid cancel response")
-
-		resp = obj.get("response") or obj
-		data = resp.get("data") or {}
-		statuses = data.get("statuses")
-		# 1) 에러 우선 탐지
-		errors = []
-		if statuses is not None:
-			_collect_errors(statuses, errors)
-		if not errors:
-			_collect_errors(obj, errors)
-		if errors:
-			raise RuntimeError(errors[0])
-
-		# 2) 'success' 확인
-		if isinstance(statuses, list) and all((isinstance(x, str) and x.lower() == "success") for x in statuses):
-			return True
-
-		# 상태가 비어있거나 알 수 없는 형식인 경우도 보수적으로 성공 처리하지 않음
-		raise RuntimeError("unknown cancel response")
-
 	# 단일 주문 취소
 	async def cancel_order(self, symbol: str, order_id: int | str, *, is_spot: bool = False):
 		"""
@@ -1156,7 +1050,7 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 				resp = await r.json()
 
 			# 성공/실패 판정
-			_ = self._extract_cancel_status(resp)
+			_ = extract_cancel_status(resp)
 			return True
 		except Exception as e:
 			return str(e)
@@ -1214,7 +1108,7 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 
 			# 응답 판정
 			# 성공이면 모두 ok=True로 업데이트
-			_ = self._extract_cancel_status(resp)
+			_ = extract_cancel_status(resp)
 			for r in results:
 				if r["ok"] is None:
 					r["ok"] = True

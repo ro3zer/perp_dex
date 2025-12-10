@@ -1,18 +1,11 @@
-import argparse
 import asyncio
 import json
 import os
 import random
 import re
-import signal
-import sys
-import time
 from typing import Any, Dict, List, Optional, Tuple
-from urllib import request as urllib_request
-from urllib.error import URLError, HTTPError
-import json
-import websockets  # type: ignore
-from websockets.exceptions import ConnectionClosed, ConnectionClosedOK  # type: ignore
+import websockets
+from websockets.exceptions import ConnectionClosed, ConnectionClosedOK, InvalidStatusCode  # type: ignore
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -76,12 +69,6 @@ RECONNECT_MAX = 8.0
 def json_dumps(obj: Any) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
-def _sample_items(d: Dict, n: int = 5):
-    try:
-        return list(d.items())[:n]
-    except Exception:
-        return []
-
 def _clean_coin_key_for_perp(key: str) -> Optional[str]:
     """
     Perp/일반 심볼 정규화:
@@ -109,18 +96,6 @@ def _clean_spot_key_from_pair(key: str) -> Optional[str]:
     base, _quote = key.split("/", 1)
     base = base.strip().upper()
     return base or None
-
-def http_to_wss(url: str) -> str:
-    """
-    'https://api.hyperliquid.xyz' → 'wss://api.hyperliquid.xyz/ws'
-    이미 wss면 그대로, /ws 미포함 시 자동 부가.
-    """
-    if url.startswith("wss://"):
-        return url if re.search(r"/ws($|[\?/#])", url) else (url.rstrip("/") + DEFAULT_WS_PATH)
-    if url.startswith("https://"):
-        base = re.sub(r"^https://", "wss://", url.rstrip("/"))
-        return base + DEFAULT_WS_PATH if not base.endswith("/ws") else base
-    return "wss://api.hyperliquid.xyz/ws"
 
 def _sub_key(sub: dict) -> str:
     """구독 payload를 정규화하여 키 문자열로 변환."""
@@ -151,7 +126,6 @@ class HLWSClientRaw:
         self._tasks: List[asyncio.Task] = []
 
         # --------- 멀티-유저 캐시(주소 소문자 키) ---------
-        self.active_user: Optional[str] = None
         self._user_subs: set[str] = set()  # 이미 구독한 user 주소 집합(소문자)
         self._open_orders_ready_by_user: Dict[str, asyncio.Event] = {}
 
@@ -163,13 +137,6 @@ class HLWSClientRaw:
 
         self._post_id = 0                            # comment: post 요청용 증가 id
         self._post_waiters: Dict[int, asyncio.Future] = {}  # comment: id -> Future
-
-        # --------- active_user 뷰(기존 코드 호환용) ---------
-        #self.margin_by_dex: Dict[str, Dict[str, float]] = {}
-        #self.positions_by_dex_norm: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        #self.positions_by_dex_raw: Dict[str, List[Dict[str, Any]]] = {}
-        #self.balances: Dict[str, float] = {}
-        #self.open_orders: List[Dict[str, Any]] = []
 
         # 가격 캐시(전역)
         self.prices: Dict[str, float] = {}
@@ -186,6 +153,14 @@ class HLWSClientRaw:
         self._send_lock = asyncio.Lock()
         self._active_subs: set[str] = set()
         self._price_events: Dict[str, asyncio.Event] = {}
+    
+    def user_count(self) -> int:
+        return len(self._user_subs)
+
+    def has_user(self, address: Optional[str]) -> bool:
+        if not address:
+            return False
+        return address.lower().strip() in self._user_subs
     
     def _next_post_id(self) -> int:
         self._post_id += 1
@@ -339,23 +314,7 @@ class HLWSClientRaw:
             return out if out["order_id"] is not None and out["symbol"] else None
         except Exception:
             return None
-
-    # 외부(풀)에서 DEX 순서를 주입
-    def set_dex_order(self, order: List[str]) -> None:
-        try:
-            ks = []
-            seen = set()
-            for k in order:
-                key = str(k).lower().strip()
-                if not key or key in seen:
-                    continue
-                ks.append(key)
-                seen.add(key)
-            if ks:
-                self.dex_keys = ks
-        except Exception:
-            pass
-    
+   
     # 외부(풀)에서 Spot 메타를 주입
     def set_spot_meta(
         self,
@@ -397,15 +356,6 @@ class HLWSClientRaw:
         except Exception:
             pass
 
-    async def wait_open_orders_ready(self, timeout: float = 2.0) -> bool:
-        try:
-            if self._open_orders_ready.is_set():
-                return True
-            await asyncio.wait_for(self._open_orders_ready.wait(), timeout=timeout)
-            return True
-        except Exception:
-            return False
-    
     # 외부 API: 첫 틱(또는 이미 캐시 보유)까지 대기
     async def wait_price_ready(
         self,
@@ -428,8 +378,6 @@ class HLWSClientRaw:
             has_val = (self.get_price(s) is not None)
         elif k == "spot_pair":
             has_val = (self.get_spot_pair_px(s) is not None)
-        elif k == "spot_base":
-            has_val = (self.get_spot_price(s) is not None)
         else:
             raise ValueError(f"wait_price_ready: invalid kind={kind!r}")
 
@@ -492,255 +440,6 @@ class HLWSClientRaw:
             await self.conn.send(json.dumps(payload, separators=(",", ":")))
             self._active_subs.add(key)
 
-    async def ensure_core_subs(self) -> None:
-        """
-        스코프별 필수 구독을 보장:
-        - allMids: 가격(이 스코프 문맥)
-        - webData3/spotState: 주소가 있을 때만
-        """
-        # 1) 가격(스코프별)
-        if self.dex:
-            await self._send_subscribe({"type": "allMids", "dex": self.dex})
-        else:
-            await self._send_subscribe({"type": "allMids"})
-        # 2) 주소 구독(webData3/spotState)
-        if self.address:
-            await self._send_subscribe({"type": "allDexsClearinghouseState", "user": self.address})
-            await self._send_subscribe({"type": "spotState", "user": self.address})
-            await self._send_subscribe({"type": "openOrders", "user": self.address, "dex":"ALL_DEXS"})
-
-    async def ensure_subscribe_active_asset(self, coin: str) -> None:
-        """
-        필요 시 코인 단위 포지션 스트림까지 구독(선택).
-        보통 webData3로 충분하므로 기본은 호출 필요 없음.
-        """
-        sub = {"type": "activeAssetData", "coin": coin}
-        if self.address:
-            sub["user"] = self.address
-        await self._send_subscribe(sub)
-
-    @staticmethod
-    def discover_perp_dexs_http(http_base: str, timeout: float = 8.0) -> list[str]:
-        """
-        POST {http_base}/info {"type":"perpDexs"} → [{'name':'xyz'}, {'name':'flx'}, ...]
-        반환: ['xyz','flx','vntl', ...] (소문자)
-        """
-        url = f"{http_base.rstrip('/')}/info"
-        payload = {"type":"perpDexs"}
-        headers = {"Content-Type": "application/json"}
-        def _post():
-            data = json_dumps(payload).encode("utf-8")
-            req = urllib_request.Request(url, data=data, headers=headers, method="POST")
-            with urllib_request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        try:
-            resp = _post()
-            out = []
-            if isinstance(resp, list):
-                for e in resp:
-                    n = (e or {}).get("name")
-                    if n:
-                        out.append(str(n).lower())
-            # 중복 제거/정렬
-            return sorted(set(out))
-        except (HTTPError, URLError):
-            return []
-        except Exception:
-            return []
-        
-    def _dex_key_by_index(self, i: int) -> str:
-        """perpDexStates 배열 인덱스를 DEX 키로 매핑. 부족하면 'dex{i}' 사용."""
-        return self.dex_keys[i] if 0 <= i < len(self.dex_keys) else f"dex{i}"
-
-    def set_dex_order(self, order: List[str]) -> None:
-        """DEX 표시 순서를 사용자 정의로 교체. 예: ['hl','xyz','flx','vntl']"""
-        try:
-            ks = [str(k).lower().strip() for k in order if str(k).strip()]
-            if ks:
-                self.dex_keys = ks
-        except Exception:
-            pass
-
-    def get_dex_keys(self) -> List[str]:
-        """현재 스냅샷에 존재하는 DEX 키(순서 보장)를 반환."""
-        present = [k for k in self.dex_keys if k in self.margin_by_dex]
-        # dex_keys 외의 임시 dex{i}가 있을 수 있으므로 뒤에 덧붙임
-        extras = [k for k in self.margin_by_dex.keys() if k not in present]
-        return present + sorted(extras)
-
-    def get_total_account_value_web3(self) -> float:
-        """webData3 기준 전체 AV 합계."""
-        try:
-            return float(sum(float((v or {}).get("accountValue", 0.0)) for v in self.margin_by_dex.values()))
-        except Exception:
-            return 0.0
-
-    def get_account_value_by_dex(self, dex: Optional[str] = None) -> Optional[float]:
-        d = self.margin_by_dex.get((dex or "hl").lower())
-        if not d: return None
-        try: return float(d.get("accountValue"))
-        except Exception: return None
-
-    def get_withdrawable_by_dex(self, dex: Optional[str] = None) -> Optional[float]:
-        d = self.margin_by_dex.get((dex or "hl").lower())
-        if not d: return None
-        try: return float(d.get("withdrawable"))
-        except Exception: return None
-
-    def get_margin_summary_by_dex(self, dex: Optional[str] = None) -> Dict[str, float]:
-        return dict(self.margin_by_dex.get((dex or "hl").lower(), {}))
-
-    def get_positions_by_dex(self, dex: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
-        return dict(self.positions_by_dex_norm.get((dex or "hl").lower(), {}))
-
-    def get_asset_ctxs_by_dex(self, dex: Optional[str] = None) -> List[Dict[str, Any]]:
-        return list(self.asset_ctxs_by_dex.get((dex or "hl").lower(), []))
-
-    # allDexsClearinghouseState 파서
-    def _update_from_allDexsClearinghouseState(self, data: Dict[str, Any]) -> None:
-        """
-        data: {"user": "...", "clearinghouseStates": [ [dex, chState], ... ] }
-        dex == "" → 'hl' 로 매핑
-        chState 구조는 clearinghouseState와 동일
-        """
-        try:
-            ch_states = (data or {}).get("clearinghouseStates") or []
-            total_av = 0.0
-
-            # 초기화(존재하는 키만 갱신할 경우 덮어쓰기)
-            # self.margin_by_dex, self.positions_by_dex_norm 등은 부분 갱신 허용
-
-            for item in ch_states:
-                # item: ["", {...}] 또는 ["xyz", {...}]
-                if not isinstance(item, (list, tuple)) or len(item) != 2:
-                    continue
-                dex_in, ch = item[0], (item[1] or {})
-                dex_key = ("hl" if (dex_in is None or str(dex_in).strip() == "") else str(dex_in).lower().strip())
-
-                ms = ch.get("marginSummary") or {}
-
-                def fnum(x, default=0.0):
-                    try:
-                        return float(x)
-                    except Exception:
-                        return default
-
-                margin = {
-                    "accountValue": fnum(ms.get("accountValue")),
-                    "totalNtlPos":  fnum(ms.get("totalNtlPos")),
-                    "totalRawUsd":  fnum(ms.get("totalRawUsd")),
-                    "totalMarginUsed": fnum(ms.get("totalMarginUsed")),
-                    "crossMaintenanceMarginUsed": fnum(ch.get("crossMaintenanceMarginUsed")),
-                    "withdrawable": fnum(ch.get("withdrawable")),
-                    "time": ch.get("time"),
-                }
-                self.margin_by_dex[dex_key] = margin
-                total_av += margin["accountValue"]
-
-                # 포지션 정규화
-                norm_map: Dict[str, Dict[str, Any]] = {}
-                raw_list: List[Dict[str, Any]] = []
-                for ap in ch.get("assetPositions") or []:
-                    pos = (ap or {}).get("position") or {}
-                    if not pos:
-                        continue
-                    raw_list.append(pos)
-                    coin_raw = str(pos.get("coin") or "")
-                    coin_upper = coin_raw.upper()
-                    try:
-                        norm = self._normalize_position(pos)
-                        norm_map[coin_upper] = norm
-                        if ":" in coin_raw:
-                            norm_map[coin_raw] = norm
-                    except Exception:
-                        continue
-                self.positions_by_dex_raw[dex_key] = raw_list
-                self.positions_by_dex_norm[dex_key] = norm_map
-
-            self.total_account_value = total_av
-
-        except Exception as e:
-            ws_logger.debug(f"[allDexsClearinghouseState] update error: {e}", exc_info=True)
-
-    def _update_from_webData3(self, data: Dict[str, Any]) -> None:
-        """
-        webData3 포맷을 DEX별로 분리 파싱해 내부 캐시에 반영.
-        data 구조:
-        - userState: {...}
-        - perpDexStates: [ { clearinghouseState, assetCtxs, ...}, ... ]  # HL, xyz, flx, vntl 순
-        """
-        try:
-            # userState(참고/보조)
-            user_state = data.get("userState") or {}
-            
-            
-            self.server_time = user_state.get("serverTime") or self.server_time
-            if user_state.get("user"):
-                self.agent["user"] = user_state.get("user")
-            if user_state.get("agentAddress"):
-                self.agent["agentAddress"] = user_state["agentAddress"]
-            if user_state.get("agentValidUntil"):
-                self.agent["agentValidUntil"] = user_state["agentValidUntil"]
-            
-            dex_states = data.get("perpDexStates") or []
-            
-            # 누적 합계 재계산
-            self.total_account_value = 0.0
-
-
-            for i, st in enumerate(dex_states):
-                dex_key = self._dex_key_by_index(i)
-                ch = (st or {}).get("clearinghouseState") or {}
-                ms = ch.get("marginSummary") or {}
-
-                # 숫자 변환
-                def fnum(x, default=0.0):
-                    try: return float(x)
-                    except Exception: return default
-
-                margin = {
-                    "accountValue": fnum(ms.get("accountValue")),
-                    "totalNtlPos":  fnum(ms.get("totalNtlPos")),
-                    "totalRawUsd":  fnum(ms.get("totalRawUsd")),
-                    "totalMarginUsed": fnum(ms.get("totalMarginUsed")),
-                    "crossMaintenanceMarginUsed": fnum(ch.get("crossMaintenanceMarginUsed")),
-                    "withdrawable": fnum(ch.get("withdrawable")),
-                    "time": ch.get("time"),
-                }
-                self.margin_by_dex[dex_key] = margin
-                self.total_account_value += float(margin["accountValue"])
-
-                # 포지션(정규화/원본)
-                norm_map: Dict[str, Dict[str, Any]] = {}
-                raw_list: List[Dict[str, Any]] = []
-                for ap in ch.get("assetPositions") or []:
-                    pos = (ap or {}).get("position") or {}
-                    if not pos:
-                        continue
-                    raw_list.append(pos)
-                    coin_raw = str(pos.get("coin") or "")
-                    coin_upper = coin_raw.upper()
-                    if coin_upper:
-                        try:
-                            norm = self._normalize_position(pos)
-                            # [ADD] 기존 대문자 키
-                            norm_map[coin_upper] = norm  # comment: 기존 동작 유지
-                            # [ADD] HIP-3 호환: 원문 키도 함께 저장해 조회 경로 다양성 보장
-                            if ":" in coin_raw:
-                                norm_map[coin_raw] = norm  # comment: 'xyz:XYZ100' 같은 원문 키 추가
-                        except Exception:
-                            continue
-                self.positions_by_dex_raw[dex_key] = raw_list
-                self.positions_by_dex_norm[dex_key] = norm_map
-
-                # 자산 컨텍스트(raw 리스트 그대로 저장)
-                asset_ctxs = st.get("assetCtxs") or []
-                if isinstance(asset_ctxs, list):
-                    self.asset_ctxs_by_dex[dex_key] = asset_ctxs
-
-        except Exception as e:
-            ws_logger.debug(f"[webData3] update error: {e}", exc_info=True)
-
     def _normalize_position(self, pos: Dict[str, Any]) -> Dict[str, Any]:
         """
         webData3.clearinghouseState.assetPositions[*].position → 표준화 dict
@@ -780,55 +479,7 @@ class HLWSClientRaw:
             "raw": pos,  # 원본도 보관(디버깅/확장용)
         }
 
-    # [추가] 정규화 포지션 전체 반환(사본)
-    def get_positions(self) -> Dict[str, Dict[str, Any]]:
-        return dict(self.positions_norm)
-
-    # [추가] 단일 코인의 핵심 요약 반환(사이즈=0 이면 None)
-    def get_position_simple(self, coin: str) -> Optional[tuple]:
-        """
-        반환: (side, size, entry_px, upnl, roe, lev_type, lev_value)
-        없거나 size=0이면 None
-        """
-        p = self.positions_norm.get(coin.upper())
-        if not p or not p.get("size"):
-            return None
-        return (
-            p.get("side"),
-            float(p.get("size") or 0.0),
-            p.get("entry_px"),
-            p.get("upnl"),
-            p.get("roe"),
-            p.get("lev_type"),
-            p.get("lev_value"),
-        )
     
-    def get_account_value(self) -> Optional[float]:
-        return self.margin.get("accountValue")
-
-    def get_withdrawable(self) -> Optional[float]:
-        return self.margin.get("withdrawable")
-
-    def get_collateral_quote(self) -> Optional[str]:
-        return self.collateral_quote
-
-    def get_perp_ctx(self, coin: str) -> Optional[Dict[str, Any]]:
-        return self.asset_ctxs.get(coin.upper())
-
-    def get_perp_sz_decimals(self, coin: str) -> Optional[int]:
-        meta = self.perp_meta.get(coin.upper())
-        return meta.get("szDecimals") if meta else None
-
-    def get_perp_max_leverage(self, coin: str) -> Optional[int]:
-        meta = self.perp_meta.get(coin.upper())
-        return meta.get("maxLeverage") if meta else None
-
-    def get_position(self, coin: str) -> Optional[Dict[str, Any]]:
-        return self.positions.get(coin.upper())
-
-    def get_spot_balance(self, token: str) -> float:
-        return float(self.balances.get(token.upper(), 0.0))
-
     def get_spot_pair_px(self, pair: str) -> Optional[float]:
         """
         스팟 페어 가격 조회(내부 캐시 기반, 우선순위):
@@ -873,19 +524,63 @@ class HLWSClientRaw:
 
         return None
 
-    #def get_spot_px_base(self, base: str) -> Optional[float]:
-    #    return self.spot_base_px.get(base.upper())
-
-    def get_open_orders(self) -> List[Dict[str, Any]]:
-        return list(self.open_orders)
-
     async def connect(self) -> None:
-        ws_logger.info(f"WS connect: {self.ws_url}")
-        self.conn = await websockets.connect(self.ws_url, ping_interval=None, open_timeout=WS_CONNECT_TIMEOUT)
-        # keepalive task (JSON ping)
-        self._tasks.append(asyncio.create_task(self._ping_loop(), name="ping"))
-        # listen task
-        self._tasks.append(asyncio.create_task(self._listen_loop(), name="listen"))
+        """
+        서버가 429를 반환하는 경우가 있어, 지수 백오프(+지터)로 재시도합니다.
+        Retry-After 헤더가 있으면 우선 존중합니다.
+        """
+        max_attempts = 6            # comment: 총 6회(예: ~1.5s → ~30s까지 확대)
+        base = 0.5                  # comment: 기본 대기 0.5초
+        cap = 30.0                  # comment: 최대 대기 30초
+        last_exc = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                # 기존 websockets.connect 호출
+                self.conn = await websockets.connect(
+                    self.ws_url,
+                    ping_interval=None,
+                    open_timeout=WS_CONNECT_TIMEOUT,  # 기존 상수 재사용
+                )
+                # 수신 루프/핵심 구독 등 기존 로직
+                # keepalive task (JSON ping)
+                self._tasks.append(asyncio.create_task(self._ping_loop(), name="ping"))
+                # listen task
+                self._tasks.append(asyncio.create_task(self._listen_loop(), name="listen"))
+                return
+            except InvalidStatusCode as e:
+                last_exc = e
+                status = getattr(e, "status_code", None) or getattr(e, "code", None)
+                if status != 429:
+                    # 429 이외는 즉시 전파(필요시 403/503도 백오프에 포함 가능)
+                    raise
+                # 429 → Retry-After 헤더 우선
+                headers = getattr(e, "headers", None) or getattr(e, "response_headers", None) or {}
+                retry_after = None
+                try:
+                    # websockets의 headers 타입에 따라 dict/Headers 둘 다 대응
+                    ra = headers.get("Retry-After") if hasattr(headers, "get") else None
+                    retry_after = float(ra) if ra is not None else None
+                except Exception:
+                    retry_after = None
+
+                if retry_after is None:
+                    # 지수 백오프 + 지터
+                    backoff = min(cap, base * (2 ** (attempt - 1)))
+                    jitter = random.uniform(0, backoff * 0.2)
+                    sleep_for = backoff + jitter
+                else:
+                    sleep_for = max(0.0, retry_after)
+
+                # 로그를 남기고 다음 시도
+                # ws_logger.debug(f"WS 429 on connect, retry in {sleep_for:.2f}s (attempt {attempt}/{max_attempts})")
+                await asyncio.sleep(sleep_for)
+                continue
+            except Exception as e:
+                last_exc = e
+                # 네트워크 오류 등: 짧게 리트라이(옵션). 현재는 즉시 전파.
+                raise
+        # 모든 시도 실패
+        raise last_exc or RuntimeError("WS connect failed with 429")
 
     async def close(self) -> None:
         self._stop.set()
@@ -899,39 +594,6 @@ class HLWSClientRaw:
             except Exception:
                 pass
         self.conn = None
-
-    def build_subscriptions(self) -> List[Dict[str, Any]]:
-        subs: list[dict] = []
-        # 1) scope별 allMids
-        if self.dex:
-            subs.append({"type":"allMids","dex": self.dex})
-        else:
-            subs.append({"type":"allMids"})  # HL(메인)
-        # 2) 주소가 있으면 user 스트림(webData3/spotState)도 구독
-        if self.address:
-            subs.append({"type":"allDexsClearinghouseState","user": self.address})
-            subs.append({"type":"spotState","user": self.address})
-            subs.append({"type":"openOrders","user": self.address, "dex":"ALL_DEXS"})
-        return subs
-    
-    def _update_spot_balances(self, balances_list: Optional[List[Dict[str, Any]]]) -> None:
-        """
-        balances_list: [{'coin':'USDC','token':0,'total':'88.2969',...}, ...]
-        - balances[token_name] 갱신
-        """
-        if not isinstance(balances_list, list):
-            return
-        updated = 0
-        for b in balances_list:
-            try:
-                token_name = str(b.get("coin") or b.get("tokenName") or b.get("token")).upper()
-                if not token_name:
-                    continue
-                total = float(b.get("total") or 0.0)
-                self.balances[token_name] = total
-                updated += 1
-            except Exception:
-                continue
 
     async def subscribe(self) -> None:
         """
@@ -948,13 +610,30 @@ class HLWSClientRaw:
             ws_logger.info(f"SUB -> {json_dumps({'method':'subscribe','subscription':sub})}")
 
     async def resubscribe(self) -> None:
-        if not self.conn or not self._subscriptions:
+        """
+        재연결 시 누락 구독을 복원.
+        - 핵심 가격 구독(self._subscriptions: allMids)
+        - 사용자 스트림(_user_subs: allDexsClearinghouseState/spotState/openOrders)
+        """
+        if not self.conn:
             return
-        # 재연결 시 서버는 이전 구독 상태를 잊었으므로 클라이언트 dedup도 비웁니다.
+        # 1) 클라이언트 측 중복 방지 셋 초기화
         self._active_subs.clear()
-        for sub in self._subscriptions:
+
+        # 2) 가격 채널(allMids) 재구독
+        for sub in self._subscriptions or []:
             await self._send_subscribe(sub)
             ws_logger.info(f"RESUB -> {json_dumps({'method':'subscribe','subscription':sub})}")
+
+        # 3) 유저 스트림 재구독 (최소 필요 3종)
+        for u in list(self._user_subs):
+            for sub in (
+                {"type": "allDexsClearinghouseState", "user": u},
+                {"type": "spotState", "user": u},
+                {"type": "openOrders", "user": u, "dex": "ALL_DEXS"},
+            ):
+                await self._send_subscribe(sub)
+                ws_logger.info(f"RESUB(user) -> {json_dumps({'method':'subscribe','subscription':sub})}")
 
     # ---------------------- 루프/콜백 ----------------------
 
@@ -1224,59 +903,26 @@ class HLWSClientRaw:
         """Perp/일반 심볼 가격 조회(캐시)."""
         return self.prices.get(symbol.upper())
 
-    def get_spot_price(self, symbol: str) -> Optional[float]:
-        """Spot 심볼 가격 조회(캐시)."""
-        return self.spot_prices.get(symbol.upper())
-
-    def get_all_spot_balances(self) -> Dict[str, float]:
-        return dict(self.balances)
-
-    def get_spot_portfolio_value_usdc(self) -> float:
-        """
-        USDC 기준 추정 총가치:
-        - USDC = 1.0
-        - 기타 토큰은 BASE/USDC 단가(self.spot_prices 또는 spot_pair_ctxs의 mid/mark/prev) 사용
-        - 가격을 알 수 없는 토큰은 0으로 계산
-        """
-        total = 0.0
-        for token, amt in self.balances.items():
-            try:
-                if token == "USDC":
-                    px = 1.0
-                else:
-                    # 우선 캐시된 BASE/USDC mid/mark/prev 기반
-                    px = self.spot_prices.get(token)
-                    if px is None:
-                        # spot_pair_ctxs에 'TOKEN/USDC'가 있으면 그 값을 사용
-                        pair = f"{token}/USDC"
-                        ctx = self.spot_pair_ctxs.get(pair)
-                        if isinstance(ctx, dict):
-                            for k in ("midPx","markPx","prevDayPx"):
-                                v = ctx.get(k)
-                                if v is not None:
-                                    try:
-                                        px = float(v); break
-                                    except Exception:
-                                        continue
-                if px is None:
-                    continue
-                total += float(amt) * float(px)
-            except Exception:
-                continue
-        return float(total)
-
-
 class HLWSClientPool:
+    USER_SUB_LIMIT = 10  # [ADDED] 유저별 구독 최대치
     """
     (ws_url, address) 단위로 HLWSClientRaw를 1개만 생성/공유하는 풀.
     - 동일 주소에서 다중 DEX allMids는 하나의 커넥션에서 추가 구독한다.
     - address가 None/""이면 '가격 전용' 공유 커넥션으로 취급(유저 스트림 없음).
     """
     def __init__(self) -> None:
-        self._clients: dict[str, HLWSClientRaw] = {}   # key: ws_url만 사용
-        self._refcnt: dict[str, int] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        # 단일 소켓 리스트로 단순화
+        self._sockets: List[HLWSClientRaw] = []                  # comment: 열린 WS 소켓들
+        self._addr_to_socket: Dict[str, HLWSClientRaw] = {}      # comment: address(lower) → socket
+        self._refcnt_by_socket: Dict[HLWSClientRaw, int] = {}    # comment: socket 별 참조 카운트
 
+        # 단일 락(같은 ws_url만 사용한다는 전제)
+        self._lock = asyncio.Lock()
+
+        # 연결 직렬화용 세마포어(동시에 1개만 connect)
+        self._connect_sema = asyncio.Semaphore(1)  # comment: 너무 빠른 동시 연결 → 429 예방
+
+        # 공유 메타
         self._shared_lock = asyncio.Lock()
         self._shared_primed: bool = False
         self._shared_dex_order: List[str] = ["hl"]
@@ -1285,16 +931,7 @@ class HLWSClientPool:
         self._shared_spot_pair_by_index: Dict[int, str] = {}
         self._shared_spot_bq_by_index: Dict[int, tuple[str, str]] = {}
 
-    def _key(self, ws_url: str) -> str:
-        # 주소를 키에서 제거 → 같은 ws_url은 항상 동일 소켓을 사용
-        return http_to_wss(ws_url)
-    
-    def _get_lock(self, key: str) -> asyncio.Lock:
-        if key not in self._locks:
-            self._locks[key] = asyncio.Lock()
-        return self._locks[key]
-    
-    # 초기 1회만 공유 메타를 주입(이미 primed면 무시)
+    # ---------------- 공유 메타 ----------------
     async def prime_shared_meta(self, *, dex_order=None, idx2name=None, name2idx=None, pair_by_index=None, bq_by_index=None) -> None:
         async with self._shared_lock:
             if self._shared_primed:
@@ -1311,8 +948,7 @@ class HLWSClientPool:
             self._shared_spot_bq_by_index = dict(bq_by_index or {})
             self._shared_primed = True
 
-    def _apply_shared_to_client_unlocked(self, c: HLWSClientRaw) -> None:
-        c.set_dex_order(self._shared_dex_order or ["hl"])
+    def _apply_shared_to_socket_unlocked(self, c: HLWSClientRaw) -> None:
         c.set_spot_meta(
             self._shared_spot_idx2name,
             self._shared_spot_name2idx,
@@ -1320,10 +956,26 @@ class HLWSClientPool:
             self._shared_spot_bq_by_index,
         )
 
+    # ---------------- 소켓 선택/생성 ----------------
+    def _pick_socket_for_address(self, address: Optional[str]) -> Optional[HLWSClientRaw]:
+        """
+        - 이미 배정된 주소면 해당 소켓 반환
+        - 아니면 현재 소켓 중 user_count < LIMIT 인 첫 소켓 반환
+        - 없으면 None(→ 새 소켓 생성)
+        """
+        a = (address or "").lower().strip()
+        if a and a in self._addr_to_socket:
+            return self._addr_to_socket[a]
+        for s in self._sockets:
+            if s.user_count() < self.USER_SUB_LIMIT:
+                return s
+        return None
+
+    # ---------------- 퍼블릭 API ----------------
     async def acquire(
         self,
         *,
-        ws_url: str,
+        ws_url: str,            # 인터페이스 호환을 위해 남겨두지만, 내부 키로는 사용하지 않음(단일 URL 전제)
         http_base: str,
         address: Optional[str],
         dex: Optional[str] = None,
@@ -1333,6 +985,7 @@ class HLWSClientPool:
         pair_by_index: Optional[Dict[int, str]] = None,
         bq_by_index: Optional[Dict[int, Tuple[str, str]]] = None,
     ) -> HLWSClientRaw:
+        # 공유 메타 1회 주입
         await self.prime_shared_meta(
             dex_order=dex_order,
             idx2name=idx2name,
@@ -1341,46 +994,69 @@ class HLWSClientPool:
             bq_by_index=bq_by_index,
         )
 
-        key = self._key(ws_url)
-        lock = self._get_lock(key)
-        async with lock:
-            client = self._clients.get(key)
-            if client is None:
-                client = HLWSClientRaw(
-                    ws_url=http_to_wss(ws_url),
+        async with self._lock:
+            sock = self._pick_socket_for_address(address)
+            new_socket = False
+            if sock is None:
+                sock = HLWSClientRaw(
+                    ws_url=ws_url if ws_url.startswith("wss") else ws_url.replace("http", "wss", 1),
                     dex=None,
-                    address=None,   # [CHANGED] 단일 소켓이므로 주소 미지정
+                    address=None,
                     coins=[],
                     http_base=http_base,
                 )
                 async with self._shared_lock:
-                    self._apply_shared_to_client_unlocked(client)
-                await client.ensure_connected_and_subscribed()
-                self._clients[key] = client
-                self._refcnt[key] = 0
+                    self._apply_shared_to_socket_unlocked(sock)
+                new_socket = True
 
-            self._refcnt[key] += 1
+            # refcnt++
+            self._refcnt_by_socket[sock] = self._refcnt_by_socket.get(sock, 0) + 1
+            if new_socket:
+                self._sockets.append(sock)
 
-        # 가격 스코프 구독(필요 시)
-        await client.ensure_allmids_for(dex)
-        # [ADDED] 유저 스트림 구독
+        # 새 소켓을 실제로 연결하는 구간은 직렬화
+        if new_socket:
+            async with self._connect_sema:
+                await sock.ensure_connected_and_subscribed()
+                # 소량의 간격(버스트 완화)
+                await asyncio.sleep(0.2)
+
+        # 가격 구독/유저 구독
+        await sock.ensure_allmids_for(dex)
         if address:
-            await client.ensure_user_streams(address)
-        return client
+            addr_l = address.lower().strip()
+            await sock.ensure_user_streams(addr_l)
+            self._addr_to_socket[addr_l] = sock
 
-    async def release(self, *, ws_url: str, address: Optional[str]) -> None:
-        key = self._key(ws_url)
-        lock = self._get_lock(key)
-        async with lock:
-            if key not in self._clients:
-                return
-            self._refcnt[key] = max(0, self._refcnt.get(key, 1) - 1)
-            if self._refcnt[key] == 0:
-                c = self._clients.pop(key)
-                self._refcnt.pop(key, None)
+        return sock
+
+    async def release(self, *, ws_url: str, address: Optional[str] = None, client: Optional[HLWSClientRaw] = None) -> None:
+        """
+        - client를 명시하면 그 소켓을 해제(권장)
+        - 아니면 address 매핑으로 소켓을 찾아 해제
+        """
+        async with self._lock:
+            target: Optional[HLWSClientRaw] = client
+            addr_l = (address or "").lower().strip()
+            if target is None and addr_l and addr_l in self._addr_to_socket:
+                target = self._addr_to_socket.pop(addr_l, None)
+
+            if target is None:
+                # 등록된 첫 소켓(있다면)으로 대체(비권장 경로)
+                target = self._sockets[0] if self._sockets else None
+                if target is None:
+                    return
+
+            # refcnt--
+            self._refcnt_by_socket[target] = max(0, self._refcnt_by_socket.get(target, 1) - 1)
+            if self._refcnt_by_socket[target] == 0:
                 try:
-                    await c.close()
-                except Exception:
-                    pass
+                    await target.close()
+                finally:
+                    self._refcnt_by_socket.pop(target, None)
+                    try:
+                        self._sockets.remove(target)
+                    except ValueError:
+                        pass
 
 WS_POOL = HLWSClientPool()

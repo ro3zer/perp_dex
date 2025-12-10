@@ -63,6 +63,84 @@ def format_size(amount: float, sz_dec: int) -> str:
     # [중요 수정] size도 정수부 0가 잘리지 않도록 소수부가 있을 때만 제거
     return _strip_decimal_trailing_zeros(size_str)
 
+def extract_order_id(raw) -> Optional[str]:
+    """
+    지원 형태(단순화):
+      {'status':'ok','response':{'type':'order','data':{'statuses':[{'resting':{'oid':...}}]}}}
+      {'status':'ok','response':{'type':'order','data':{'statuses':[{'filled': {'oid':...,'avgPx':...}}]}}}
+      {'status':'ok','response':{'type':'order','data':{'statuses':[{'error':'...'}]}}}
+    - 성공 시: oid를 문자열로 반환
+    - 실패 시: RuntimeError(error) 발생
+    - 매칭 불가 시: None
+    """
+    # 루트 정규화(list로 감싸져 올 가능성 방어)
+    obj = raw[0] if isinstance(raw, list) and raw else raw
+    if not isinstance(obj, dict):
+        return None
+
+    # statuses 추출
+    try:
+        statuses = obj["response"]["data"]["statuses"]
+    except Exception:
+        return None
+
+    if not isinstance(statuses, list):
+        return None
+
+    # 우선 에러 검사 → 성공 oid 추출
+    for st in statuses:
+        if isinstance(st, dict) and isinstance(st.get("error"), str) and st["error"].strip():
+            raise RuntimeError(st["error"].strip())
+
+    for st in statuses:
+        if not isinstance(st, dict):
+            continue
+        for key in ("resting", "filled"):
+            node = st.get(key)
+            if isinstance(node, dict) and "oid" in node:
+                return str(node["oid"])
+
+    return None
+
+# cancel 응답 파서: 성공/오류 판정
+def extract_cancel_status(raw) -> bool:
+    """
+    성공 시 True, 오류 메시지 있으면 RuntimeError(error)를 발생시킵니다.
+    """
+    def _collect_errors(node, sink: list):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in ("error", "reason", "message") and isinstance(v, str) and v.strip():
+                    sink.append(v.strip())
+                elif isinstance(v, (dict, list)):
+                    _collect_errors(v, sink)
+        elif isinstance(node, list):
+            for it in node:
+                _collect_errors(it, sink)
+
+    obj = raw[0] if isinstance(raw, list) and raw else raw
+    if not isinstance(obj, dict):
+        raise RuntimeError("invalid cancel response")
+
+    resp = obj.get("response") or obj
+    data = resp.get("data") or {}
+    statuses = data.get("statuses")
+    # 1) 에러 우선 탐지
+    errors = []
+    if statuses is not None:
+        _collect_errors(statuses, errors)
+    if not errors:
+        _collect_errors(obj, errors)
+    if errors:
+        raise RuntimeError(errors[0])
+
+    # 2) 'success' 확인
+    if isinstance(statuses, list) and all((isinstance(x, str) and x.lower() == "success") for x in statuses):
+        return True
+
+    # 상태가 비어있거나 알 수 없는 형식인 경우도 보수적으로 성공 처리하지 않음
+    raise RuntimeError("unknown cancel response")
+
 async def get_dex_list(s: aiohttp.ClientSession):
     url = f"{BASE_URL}/info"
     payload = {"type":"perpDexs"}
