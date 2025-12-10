@@ -468,52 +468,66 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 		except Exception as e:
 			return str(e)
 
-	async def update_leverage(self, symbol, leverage=None):
+	async def update_leverage(
+			self,
+			symbol,
+			leverage=None,
+			*,
+			prefer_ws: bool = True,
+			timeout: float = 8.0,
+		):
 		# use max leverage all the time
 		if self._leverage_updated_to_max:
 			return {'status':'ok','response':'already updated!'}
 		
-		# ws
-		try:
-			ws_res = await self.update_leverage_ws(symbol, leverage=leverage, timeout=8.0)
-			# ws_res가 에러 문자열이면 REST 폴백
-			if isinstance(ws_res, dict) or ws_res is True:
-				if ws_res.get("status") == 'ok':
-					self._leverage_updated_to_max = True
-				return ws_res
-		except Exception:
-			pass
-		
 		raw = str(symbol).strip()
 		dex, coin_key = parse_hip3_symbol(raw)
-		asset_id, _, max_leverage, isolated, _ = await self._resolve_perp_asset_and_szdec(dex, coin_key)
-		if not leverage:
-			leverage = max_leverage
-		#print("max_leverage:",max_leverage)
+		asset_id, _, max_leverage, only_isolated, _ = await self._resolve_perp_asset_and_szdec(dex, coin_key)
+		if asset_id is None:
+			return "asset not found"
+		
+		lev = int(leverage or max_leverage or 1)
+		is_cross = (not bool(only_isolated))
 		action = {
 			"type": "updateLeverage",
 			"asset": asset_id,
-			"isCross": (not isolated),
-			"leverage": int(leverage),
+			"isCross": is_cross,
+			"leverage": lev,
 		}
-		#nonce, sig = self._sign_hl_action(action)
-		#payload = {"action": action, "nonce": nonce, "signature": sig}
-		#if self.vault_address:
-		#	payload["vaultAddress"] = self.vault_address
-
 		payload = await get_superstack_payload(api_key=self.api_key, action=action, vault_address=self.vault_address)
 		if self.vault_address:
 			payload["vaultAddress"] = self.vault_address
-
-		url = f"{self.http_base}/exchange"
-		s = self._session()
-		async with s.post(url, json=payload, headers={"Content-Type": "application/json"}) as r:
-			r.raise_for_status()
-			resp = await r.json()
-			# {'status': 'ok', 'response': {'type': 'default'}}
-			if resp.get("status") == 'ok':
-				self._leverage_updated_to_max = True
+		
+		if prefer_ws:
+			# {"status":"ok","response":{...}}
+			try:
+				if not self.ws_client and self.fetch_by_ws:
+					await self._create_ws_client()
+				if self.ws_client:
+					resp = await self.ws_client.post_action(payload, timeout=timeout)
+					# resp 예: {"type":"action"|"error","payload": {... or str}}
+					rtype = str(resp.get("type") or "")
+					pl = resp.get("payload")
+					if rtype == "error":
+						raise RuntimeError(str(pl))
+					status = (pl or {}).get("status")
+					if str(status).lower() == "ok":
+						self._leverage_updated_to_max = True
+						return pl  # {"status":"ok", "response": {...}}
+					# 모호한 응답이면 그대로 반환
+					return pl or {"status": "unknown"}
+			except Exception:
+				pass
+		
 		try:
+			url = f"{self.http_base}/exchange"
+			s = self._session()
+			async with s.post(url, json=payload, headers={"Content-Type": "application/json"}) as r:
+				r.raise_for_status()
+				resp = await r.json()
+				# {'status': 'ok', 'response': {'type': 'default'}}
+				if resp.get("status") == 'ok':
+					self._leverage_updated_to_max = True
 			return resp
 		except Exception as e:
 			return str(e)

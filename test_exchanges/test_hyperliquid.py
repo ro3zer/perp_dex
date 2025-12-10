@@ -37,7 +37,7 @@ async def main():
     superstack = await create_exchange('superstack',SUPERSTACK_KEY)
     await asyncio.sleep(0.2)
     
-    '''
+    
     while True:
         res = await hyperliquid.update_leverage(symbol)
         print(res)
@@ -47,7 +47,7 @@ async def main():
         print(superstack._leverage_updated_to_max)
         await asyncio.sleep(1)
     return
-    '''
+    
     
     
     HYPERLIQUID_KEY2.fetch_by_ws = True # for rest api test
