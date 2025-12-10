@@ -852,7 +852,7 @@ alert('Signing/Submit failed: ' + e.message);
 		if not address:
 			return None
 		if not self.ws_client:
-			await self.create_ws_client()
+			await self._create_ws_client()
 		deadline = time.monotonic() + timeout
 		while time.monotonic() < deadline:
 			if self.ws_client.get_positions_norm_for_user(address):
@@ -1085,7 +1085,7 @@ alert('Signing/Submit failed: ' + e.message);
 		if not address:
 			return {"available_collateral": None, "total_collateral": None, "spot": {"USDH": 0.0, "USDC": 0.0, "USDT": 0.0}}
 		if not self.ws_client:
-			await self.create_ws_client()
+			await self._create_ws_client()
 		# 최초 스냅샷 폴링
 		deadline = time.monotonic() + timeout
 		while time.monotonic() < deadline:
@@ -1310,8 +1310,8 @@ alert('Signing/Submit failed: ' + e.message);
 		- 첫 틱이 아직 도착하지 않은 경우 wait_price_ready가 있으면 timeout까지 대기
 		- 값을 얻지 못하면 예외를 던져 상위(get_mark_price)에서 REST 폴백하게 한다.
 		"""
-		#if not self.ws_client:
-		#    await self.create_ws_client()
+		if not self.ws_client:
+			await self._create_ws_client()
 
 		raw = str(symbol).strip()
 		#if "/" in raw:

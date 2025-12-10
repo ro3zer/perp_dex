@@ -353,61 +353,13 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 		self._ws_pool_key = (self.ws_base, (address or "").lower())
 		#return self.ws_client
 
-	async def update_leverage_ws(self, symbol: str, leverage: Optional[int] = None, timeout: float = 8.0):
-		"""
-		WS 'post' 액션으로 레버리지 업데이트.
-		성공 시 {"status":"ok","response":{...}} 형태의 payload를 반환하거나 True를 반환.
-		실패 시 문자열 오류를 반환.
-		"""
-		try:
-			if not self.ws_client:
-				await self._create_ws_client()
-
-			raw = str(symbol).strip()
-			dex, coin_key = parse_hip3_symbol(raw)
-			asset_id, _szd, max_leverage, isolated, _quote_id = await self._resolve_perp_asset_and_szdec(dex, coin_key)
-			if asset_id is None:
-				return "asset not found"
-
-			lev = int(leverage or max_leverage or 1)
-			action = {
-				"type": "updateLeverage",
-				"asset": int(asset_id),
-				"isCross": (not bool(isolated)),
-				"leverage": lev,
-			}
-			#nonce, sig = self._sign_hl_action(action)
-			#payload = {"action": action, "nonce": nonce, "signature": sig}
-			#if self.vault_address:
-			#	payload["vaultAddress"] = self.vault_address
-			payload = await get_superstack_payload(api_key=self.api_key, action=action, vault_address=self.vault_address)
-			if self.vault_address:
-				payload["vaultAddress"] = self.vault_address
-
-			resp = await self.ws_client.post_action(payload, timeout=timeout)
-			# resp: {"type":"action"|"error", "payload": {... or str}}
-			rtype = str(resp.get("type") or "")
-			pl = resp.get("payload")
-			if rtype == "error":
-				# payload는 보통 문자열 에러
-				return str(pl)
-			# type == "action" 인 경우 payload: {"status":"ok", "response": {...}}
-			status = (pl or {}).get("status")
-			if str(status).lower() == "ok":
-				self._leverage_updated_to_max = (lev == (max_leverage or lev))
-				return pl
-			# 드물게 payload가 없거나 다른 형태인 경우 보수 처리
-			return pl or {"status": "unknown"}
-		except Exception as e:
-			return str(e)
-
 	async def update_leverage(
 			self,
 			symbol,
 			leverage=None,
 			*,
 			prefer_ws: bool = True,
-			timeout: float = 8.0,
+			timeout: float = 5.0,
 		):
 		# use max leverage all the time
 		if self._leverage_updated_to_max:
@@ -477,7 +429,9 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 		is_spot: bool = False,
 		tif: Optional[str] = None,
 		client_id: Optional[str] = None,
-		slippage: Optional[float] = 0.05
+		slippage: Optional[float] = 0.05,
+		prefer_ws: bool = True,
+		timeout: float = 5.0,
 	):
 		"""
 		HL REST 주문(Perp/Spot 겸용).
@@ -485,14 +439,14 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 		- HIP-3(dex:COIN) 자동 처리, Spot 주문 지원
 		반환: {"id": "<oid>", "info": <원문응답>}
 		"""
-		res = await self.update_leverage(symbol)
 		#print(res)
 		# 0) 공통
 		is_buy = str(side).lower() == "buy"
 		raw = str(symbol).strip()
-		
+
 		# 1) Spot 여부 판단
 		if is_spot or ("/" in raw):
+			dex = None
 			pair = raw.upper() if "/" in raw else raw.upper()
 			if self.spot_asset_pair_to_index is None:
 				raise RuntimeError("spot meta not initialized")
@@ -523,80 +477,41 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 				# 틱에 맞춰 BUY: 올림, SELL: 내림
 				d_tick = round_to_tick(float(price), tick_decimals, up=is_buy)
 				price_str = format_price(float(d_tick), tick_decimals)
-
 			# 수량 포맷: BASE szDecimals 기준
 			size_str = format_size(float(amount), int(base_sz_dec))
-
-			order_obj = {
-				"a": int(asset_id),
-				"b": bool(is_buy),
-				"p": price_str,
-				"s": size_str,
-				"r": bool(is_reduce_only),
-				"t": {"limit": {"tif": tif_final}},
-			}
-			if client_id:
-				order_obj["c"] = str(client_id)
-
-			action_type = "order" # same as perp
-
-			# 빌더
-			if self.builder_code:
-				fee_int = self._pick_builder_fee_int(None, ord_type)   # spot은 공통/기본 룰
-				builder_payload = {"b": str(self.builder_code).lower()}
-				if isinstance(fee_int, int):
-					builder_payload["f"] = int(fee_int)
-				action = {"type": action_type, "orders": [order_obj], "grouping": "na", "builder": builder_payload}
-			else:
-				action = {"type": action_type, "orders": [order_obj], "grouping": "na"}
-
-			
-			# 서명/전송
-			#nonce, sig = self._sign_hl_action(action)
-			#payload = {"action": action, "nonce": nonce, "signature": sig}
-			payload = await get_superstack_payload(api_key=self.api_key, action=action, vault_address=self.vault_address)
-			if self.vault_address:
-				payload["vaultAddress"] = self.vault_address
-			
-			#print('debug',order_obj,payload)
-			url = f"{self.http_base}/exchange"
-			s = self._session()
-			
-			async with s.post(url, json=payload, headers={"Content-Type": "application/json"}) as r:
-				r.raise_for_status()
-				resp = await r.json()
-			try:
-				return extract_order_id(resp) # only id
-			except Exception as e:
-				return str(e)
-
-		# ---------- Perp 주문 ----------
-		dex, coin_key = parse_hip3_symbol(raw)
-		asset_id, sz_dec, *_ = await self._resolve_perp_asset_and_szdec(dex, coin_key)
-		if asset_id is None:
-			raise RuntimeError(f"asset index not found for {raw}")
-
-		tick_decimals = max(0, 6 - int(sz_dec))
-		if price is None:
-			ord_type = "market"
-			tif_final = "FrontendMarket" if self.FrontendMarket else (tif or "Gtc")
-			base_px = await self.get_mark_price(coin_key, is_spot=False)
-			if base_px is None:
-				price_str = "0"
-			else:
-				eff = float(base_px) * (1.0 + slippage) if is_buy else float(base_px) * (1.0 - slippage)
-				d_tick = round_to_tick(eff, tick_decimals, up=is_buy)
-				price_str = format_price(float(d_tick), tick_decimals)
-				if not price_str:
-					price_str = "0"
 		else:
-			ord_type = "limit"
-			tif_final = (tif or "Gtc")
-			d_tick = round_to_tick(float(price), tick_decimals, up=is_buy)
-			price_str = format_price(float(d_tick), tick_decimals)
+			try:
+				await self.update_leverage(symbol)
+			except Exception:
+				pass
+			# ---------- Perp 주문 ----------
+			dex, coin_key = parse_hip3_symbol(raw)
+			asset_id, sz_dec, *_ = await self._resolve_perp_asset_and_szdec(dex, coin_key)
+			if asset_id is None:
+				raise RuntimeError(f"asset index not found for {raw}")
 
-		size_str = format_size(float(amount), int(sz_dec))
+			tick_decimals = max(0, 6 - int(sz_dec))
+			if price is None:
+				ord_type = "market"
+				tif_final = "FrontendMarket" if self.FrontendMarket else (tif or "Gtc")
+				base_px = await self.get_mark_price(coin_key, is_spot=False)
+				if base_px is None:
+					price_str = "0"
+				else:
+					eff = float(base_px) * (1.0 + slippage) if is_buy else float(base_px) * (1.0 - slippage)
+					d_tick = round_to_tick(eff, tick_decimals, up=is_buy)
+					price_str = format_price(float(d_tick), tick_decimals)
+					if not price_str:
+						price_str = "0"
+			else:
+				ord_type = "limit"
+				tif_final = (tif or "Gtc")
+				d_tick = round_to_tick(float(price), tick_decimals, up=is_buy)
+				price_str = format_price(float(d_tick), tick_decimals)
+
+			size_str = format_size(float(amount), int(sz_dec))
 		
+		# 공통 부분
 		order_obj = {
 			"a": int(asset_id),
 			"b": bool(is_buy),
@@ -617,16 +532,34 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 				builder_payload["f"] = int(fee_int)
 			action["builder"] = builder_payload
 		
-		#nonce, sig = self._sign_hl_action(action)
-		#payload = {"action": action, "nonce": nonce, "signature": sig}
 		payload = await get_superstack_payload(api_key=self.api_key, action=action, vault_address=self.vault_address)
 		if self.vault_address:
 			payload["vaultAddress"] = self.vault_address
 
-		#print('debug',order_obj,payload)
+		# WS post
+		if prefer_ws and self.fetch_by_ws:
+			try:
+				if not self.ws_client:
+					await self._create_ws_client()
+				if self.ws_client:
+					resp = await self.ws_client.post_action(payload, timeout=timeout)
+				# resp 예: {"type":"action"|"error","payload": {... or str}}
+				rtype = str(resp.get("type") or "")
+				pl = resp.get("payload")
+				if rtype == "error":
+					raise RuntimeError(str(pl))
+				status = (pl or {}).get("status")
+				if str(status).lower() == "ok":
+					#print(pl)
+					return extract_order_id(pl)
+				return pl or {"status": "unknown"}
+			except Exception as e:
+				print(e)
+				pass # fallback to rest api
+		
+		# WS 실패시 rest api
 		url = f"{self.http_base}/exchange"
 		s = self._session()
-		
 		async with s.post(url, json=payload, headers={"Content-Type": "application/json"}) as r:
 			r.raise_for_status()
 			resp = await r.json()
@@ -1190,8 +1123,8 @@ class SuperstackExchange(MultiPerpDexMixin, MultiPerpDex):
 					spot_idx = self.spot_asset_pair_to_index.get(f"U{pair}")
 				try:
 					price = meta[spot_idx].get('markPx')
-					#print(price, pair)
-					return price # USDC, USDT, USDH 순으로 찾아서 먼저 나오는거
+					if price is not None:
+						return price # USDC, USDT, USDH 순으로 찾아서 먼저 나오는거
 				except:
 					continue
 
