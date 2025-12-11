@@ -23,6 +23,9 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
         await self.get_meta_data()
         return self
 
+    def get_perp_quote(self, symbol):
+        return 'USD'
+    
     def round_step_size(self, value: Decimal, step_size: str) -> Decimal:
         step = Decimal(step_size)
         precision = abs(step.as_tuple().exponent)

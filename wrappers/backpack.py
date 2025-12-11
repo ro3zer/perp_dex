@@ -26,6 +26,9 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
                 return str(n).rstrip('0').rstrip('.')
         return str(n)
     
+    def get_perp_quote(self, symbol):
+        return 'USD'
+    
     def parse_orders(self, orders):
         if not orders:
             return []

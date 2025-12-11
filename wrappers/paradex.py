@@ -17,7 +17,10 @@ class ParadexExchange(MultiPerpDexMixin, MultiPerpDex):
                 "privateKey": int(paradex_private_key.replace('0x', ''), 16),
             }
         })
-        
+    
+    def get_perp_quote(self, symbol):
+        return 'USD'
+    
     def public_key_from_private_key(self,private_key):
         private_key_int = int(private_key,16)
         x, _ =  ec_mult(private_key_int, EC_GEN, ALPHA, FIELD_PRIME)

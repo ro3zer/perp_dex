@@ -27,6 +27,9 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
             self._cached_auth_token, _ = self.client.create_auth_token_with_expiry(self._auth_expiry_ts)
         return self._cached_auth_token
     
+    def get_perp_quote(self, symbol):
+        return 'USD'
+    
     # use initialize when using main account
     #async def initialize(self):
     #    await self.client.set_account_index()
