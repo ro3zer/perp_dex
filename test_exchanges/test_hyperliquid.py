@@ -20,7 +20,7 @@ symbol2 = symbol_create('hyperliquid',coin2) # only perp atm
 
 #is_spot = False
 
-test_bool = [True, False, True]
+test_bool = [True, True, False]
 
 async def main():
     

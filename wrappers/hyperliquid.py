@@ -413,8 +413,10 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 						return pl  # {"status":"ok", "response": {...}}
 					# 모호한 응답이면 그대로 반환
 					return pl or {"status": "unknown"}
-			except Exception:
+			except Exception as e:
+				print(f"hyperliquid: update_leverage falling back to rest api / symbol {symbol} / leverage {leverage} / error in ws {e}")
 				pass
+		
 		
 		try:
 			# {'status': 'ok', 'response': {'type': 'default'}}
@@ -569,7 +571,7 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 					return extract_order_id(pl)
 				return pl or {"status": "unknown"}
 			except Exception as e:
-				print(e)
+				print(f"hyperliquid: create_order falling back to rest api / symbol {symbol} / error in ws {e}")
 				pass # fallback to rest api
 		
 		# WS 실패시 rest api
@@ -629,7 +631,8 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 				pos = await self.get_position_ws(symbol, timeout=2.0)
 				if pos is not None:
 					return pos
-			except Exception:
+			except Exception as e:
+				print(f"hyperliquid: get_position falling back to rest api / symbol {symbol} / error in ws {e}")
 				pass
 		return await self.get_position_rest(symbol)
 	
@@ -717,7 +720,8 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 		if self.fetch_by_ws:
 			try:
 				return await self.get_collateral_ws()
-			except:
+			except Exception as e:
+				print(f"hyperliquid: get_collateral falling back to rest api / error in ws {e}")
 				pass
 		
 		# fall back to rest api
@@ -968,105 +972,104 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 				res = await self.get_open_orders_ws(symbol, timeout=2.0)
 				if res:
 					return res
-			except Exception:
+			except Exception as e:
+				print(f"hyperliquid: get_open_orders falling back to rest api / symbol {symbol} / error in ws {e}")
 				pass
 		return await self.get_open_orders_rest(symbol, dex="ALL_DEXS")
 
-	# 단일 주문 취소
-	async def cancel_order(self, symbol: str, order_id: int | str, *, is_spot: bool = False):
-		"""
-		단일 주문 취소.
-		성공: True
-		실패: 오류 메시지(str)
-		"""
-		try:
-			asset_id = await self._resolve_asset_id_for_symbol(symbol, is_spot=is_spot)
-			cancels = [{"a": int(asset_id), "o": int(order_id)}]
-			action = {"type": "cancel", "cancels": cancels}
-
-			nonce, sig = self._sign_hl_action(action)
-			payload = {"action": action, "nonce": nonce, "signature": sig}
-			if self.vault_address:
-				payload["vaultAddress"] = self.vault_address
-
-			url = f"{self.http_base}/exchange"
-			s = self._session()
-			async with s.post(url, json=payload, headers={"Content-Type": "application/json"}) as r:
-				r.raise_for_status()
-				resp = await r.json()
-
-			# 성공/실패 판정
-			_ = extract_cancel_status(resp)
-			return True
-		except Exception as e:
-			return str(e)
-		
-	async def cancel_orders(self, symbol, open_orders = None, *, is_spot=False):
+	async def cancel_orders(
+		self,
+		symbol,
+		open_orders=None,
+		*,
+		is_spot: bool = False,
+		prefer_ws: bool = True,
+		timeout: float = 5.0,
+	):
 		"""
 		open_orders가 주어지면 그 목록을, 없으면 get_open_orders(symbol)로 조회한 목록을 취소합니다.
 		반환: List[{"order_id": ..., "symbol": ..., "ok": bool, "error": Optional[str]}]
 		"""
 		if open_orders is None:
 			open_orders = await self.get_open_orders(symbol)
-			
-		if not open_orders:
-			#print(f"[cancel_orders] No open orders for {symbol}")
-			return []
-		
-		asset_cache: dict[str, int] = {}
 
+		if not open_orders:
+			return []
+
+		# 심볼별 asset_id 캐시
+		asset_cache: dict[str, int] = {}
 		cancels = []
 		results = []
+
 		for od in open_orders:
 			oid = od.get("order_id")
 			sym = od.get("symbol") or symbol
 			if oid is None:
 				results.append({"order_id": oid, "symbol": sym, "ok": False, "error": "missing order_id"})
 				continue
-			# 심볼 기준으로 spot/perp 판별
 			sym_is_spot = is_spot or ("/" in str(sym))
 			try:
 				if sym not in asset_cache:
 					asset_cache[sym] = await self._resolve_asset_id_for_symbol(sym, is_spot=sym_is_spot)
 				cancels.append({"a": int(asset_cache[sym]), "o": int(oid)})
-				# 임시 결과(성공 가정), 실패 시 나중에 덮어씀
 				results.append({"order_id": int(oid), "symbol": sym, "ok": None, "error": None})
 			except Exception as e:
 				results.append({"order_id": oid, "symbol": sym, "ok": False, "error": str(e)})
 
-		# 취소할 게 없으면 조기 반환
+		# 취소할 주문이 없으면 조기 반환
 		pending = [r for r in results if r["ok"] is None]
 		if not pending:
 			return results
 
+		# action/payload 구성
 		action = {"type": "cancel", "cancels": cancels}
-		try:
-			nonce, sig = self._sign_hl_action(action)
-			payload = {"action": action, "nonce": nonce, "signature": sig}
-			if self.vault_address:
-				payload["vaultAddress"] = self.vault_address
+		nonce, sig = self._sign_hl_action(action)
+		payload = {"action": action, "nonce": nonce, "signature": sig}
+		if self.vault_address:
+			payload["vaultAddress"] = self.vault_address
 
-			url = f"{self.http_base}/exchange"
-			s = self._session()
-			async with s.post(url, json=payload, headers={"Content-Type": "application/json"}) as r:
-				r.raise_for_status()
-				resp = await r.json()
+		# WS 우선 → HTTP 폴백
+		ws_success = False
+		if prefer_ws and self.fetch_by_ws:
+			try:
+				if not self.ws_client:
+					await self._create_ws_client()
+				if self.ws_client:
+					resp = await self.ws_client.post_action(payload, timeout=timeout)
+					rtype = str(resp.get("type") or "")
+					pl = resp.get("payload")
+					if rtype == "error":
+						raise RuntimeError(str(pl))
+					extract_cancel_status(pl)
+					ws_success = True
+			except Exception as e:
+				print(f"hyperliquid: cancel_orders falling back to rest api / error in ws {e}")
+				pass
 
-			# 응답 판정
-			# 성공이면 모두 ok=True로 업데이트
-			_ = extract_cancel_status(resp)
-			for r in results:
-				if r["ok"] is None:
-					r["ok"] = True
-			return results
-		except Exception as e:
-			# 배치 실패: 대기 중이던 항목들을 일괄 실패 처리
-			for r in results:
-				if r["ok"] is None:
-					r["ok"] = False
-					r["error"] = str(e)
-			return results
+		if not ws_success:
+			# HTTP 폴백
+			try:
+				url = f"{self.http_base}/exchange"
+				s = self._session()
+				async with s.post(url, json=payload, headers={"Content-Type": "application/json"}) as r:
+					r.raise_for_status()
+					resp = await r.json()
+				extract_cancel_status(resp)
+			except Exception as e:
+				# 배치 전체 실패
+				for r in results:
+					if r["ok"] is None:
+						r["ok"] = False
+						r["error"] = str(e)
+				return results
 
+		# 성공 시 모든 pending을 ok=True로
+		for r in results:
+			if r["ok"] is None:
+				r["ok"] = True
+
+		return results
+	
 	# 내부 헬퍼: Spot 후보 페어 생성(우선순위 고정)
 	def _spot_pair_candidates(self, raw_symbol: str) -> list[str]:
 		"""
@@ -1088,6 +1091,7 @@ class HyperliquidExchange(MultiPerpDexMixin, MultiPerpDex):
 				px = await self.get_mark_price_ws(symbol, is_spot=is_spot, timeout=2)
 				return float(px)
 			except Exception as e:
+				print(f"hyperliquid: get_mark_price falling back to rest api / symbol {symbol} / error in ws {e}")
 				pass
 		
 		# default rest api
