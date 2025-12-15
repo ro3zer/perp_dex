@@ -9,6 +9,7 @@ import logging
 
 class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
     def __init__(self, account_id, private_key, api_key_id, l1_address):
+        super().__init__()
         logging.getLogger().setLevel(logging.WARNING)
         self.url = "https://mainnet.zklighter.elliot.ai"
         # self.chain_id = 304 # no need anymore

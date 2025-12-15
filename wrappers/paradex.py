@@ -5,6 +5,7 @@ import asyncio
 
 class ParadexExchange(MultiPerpDexMixin, MultiPerpDex):
     def __init__(self, wallet_address, paradex_address, paradex_private_key):
+        super().__init__()
         self.exchange = ccxt.paradex({
             'walletAddress': wallet_address,
             'privateKey': int(paradex_private_key.replace('0x', ''), 16),

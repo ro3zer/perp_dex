@@ -11,6 +11,7 @@ import asyncio
 
 class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
     def __init__(self,account_id,private_key):
+        super().__init__()
         self.base_url = 'https://pro.edgex.exchange'
         self.account_id = account_id
         self.private_key_hex = private_key.replace("0x", "")

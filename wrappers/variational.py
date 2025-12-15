@@ -253,6 +253,7 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
         evm_private_key: Optional[str] = None, # 필수 아님
         options: Any = None, # options # 다른 프로그램에서 사용할 경우 대비
     ):
+        super().__init__()
         if not evm_wallet_address:
             raise ValueError("evm_wallet_address is required")
         self.address = to_checksum_address(evm_wallet_address)

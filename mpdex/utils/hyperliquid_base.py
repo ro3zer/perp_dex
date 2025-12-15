@@ -42,6 +42,9 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
         fetch_by_ws: bool = False,
         FrontendMarket: bool = False,
     ):
+        super().__init__()
+        self.has_spot = True
+        
         self.wallet_address = wallet_address
         self.vault_address = vault_address
         self.builder_code = self._resolve_builder_code(builder_code)

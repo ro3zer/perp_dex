@@ -37,6 +37,7 @@ def _get_signature_header_and_url(req_type:str):
 class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
     # no use of private key, but use agent wallets instead (api)
     def __init__(self, public_key, agent_public_key, agent_private_key):
+        super().__init__()
         if not (public_key and agent_public_key and agent_private_key):
             raise ValueError("Pacifica required, pub key, agent pub key, and agent private key")
         self.public_key = public_key                # required

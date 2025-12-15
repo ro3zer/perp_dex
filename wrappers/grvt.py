@@ -22,6 +22,7 @@ grvt_logger = create_logger("grvt_logger", "grvt_error.log")
 
 class GrvtExchange(MultiPerpDexMixin, MultiPerpDex):
     def __init__(self, api_key, account_id, secret_key):
+        super().__init__()
         logging.getLogger().setLevel(logging.ERROR)
         self.logger = grvt_logger
         self.exchange = GrvtCcxtPro(
