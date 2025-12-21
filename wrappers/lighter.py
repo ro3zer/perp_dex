@@ -43,7 +43,8 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
                     self.market_info[m["symbol"].upper()] = {
                         "market_id": m["market_id"],
                         "size_decimals": m["supported_size_decimals"],
-                        "price_decimals": m["supported_price_decimals"]
+                        "price_decimals": m["supported_price_decimals"],
+                        "market_type":m["market_type"], # perp or spot
                     }
         return self
     
