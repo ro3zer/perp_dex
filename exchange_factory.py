@@ -26,10 +26,11 @@ async def create_exchange(exchange_platform: str, key_params=None):  # [MODIFIED
     Ex = _load(exchange_platform)  # [ADDED]
     
     if exchange_platform == "paradex":
-        return Ex(
+        return await Ex(
             key_params.wallet_address, 
             key_params.paradex_address, 
-            key_params.paradex_private_key)
+            key_params.paradex_private_key
+            ).init()
     
     elif exchange_platform == "edgex":
         return await Ex(
@@ -45,7 +46,10 @@ async def create_exchange(exchange_platform: str, key_params=None):  # [MODIFIED
             ).init()
     
     elif exchange_platform == "backpack":
-        return Ex(key_params.api_key, key_params.secret_key)
+        return await Ex(
+            key_params.api_key, 
+            key_params.secret_key
+            ).init()
     
     elif exchange_platform == "lighter":
         return await Ex(
@@ -120,9 +124,36 @@ SYMBOL_FORMATS = {
     "superstack": lambda coin: coin.upper(), # use internal mapping
 }
 
-def symbol_create(exchange_platform: str, coin: str):
-    coin = coin.upper()
-    try:
-        return SYMBOL_FORMATS[exchange_platform](coin)
-    except KeyError:
-        raise ValueError(f"Unsupported exchange: {exchange_platform}, coin: {coin}")
+SPOT_SYMBOL_FORMATS = {
+    "backpack": lambda c: f"{c[0]}_{c[1]}", # BTC_USDC 형태
+    "lighter": lambda c: f"{c[0]}/{c[1]}", # BTC/USDC 형태
+    "hyperliquid": lambda c: f"{c[0]}/{c[1]}", # BTC/USDC 형태
+    "superstack": lambda c: f"{c[0]}/{c[1]}", # BTC/USDC 형태
+    "treadfi.hyperliquid": lambda c: f"{c[0]}-{c[1]}", # BTC-USDC 형태
+    "edgex": lambda c: f"{c[0]}/{c[1]}", # BTC/USDC 형태
+}
+
+def symbol_create(exchange_platform: str, coin: str, *, is_spot=False):
+    """spot의 경우 BTC/USDC와 같은 형태, quote가 있음"""
+    """perp의 경우 BTC의 형태, dex가 붙으면 xyz:XYZ100 형태, quote가 없음"""
+    
+    if is_spot:
+        # 총 3케이스를 다룸 "/", "_", "-"
+        splitters = ['/','_','-']
+        for spliter in splitters:
+            if spliter in coin:
+                base_symbol = coin.split(spliter)[0].upper()
+                quote = coin.split(spliter)[1].upper()
+                #print(base_symbol,quote)
+                break
+        try:
+            return SPOT_SYMBOL_FORMATS[exchange_platform]([base_symbol,quote])
+        except KeyError:
+            raise ValueError(f"Unsupported exchange: {exchange_platform}, coin: {coin}")
+    else:
+        # perp가 default
+        coin = coin.upper()
+        try:
+            return SYMBOL_FORMATS[exchange_platform](coin)
+        except KeyError:
+            raise ValueError(f"Unsupported exchange: {exchange_platform}, coin: {coin}")

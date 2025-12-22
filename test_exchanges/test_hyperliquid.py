@@ -32,6 +32,10 @@ async def main():
     # superstack test
     superstack = await create_exchange('superstack',SUPERSTACK_KEY)
     await asyncio.sleep(0.2)
+
+    available_symbols = await hyperliquid.get_available_symbols()
+    print(available_symbols)
+    return
     
     while False:
         res = await hyperliquid.update_leverage(symbol)

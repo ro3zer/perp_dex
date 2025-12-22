@@ -8,13 +8,23 @@ from keys.pk_edgex import EDGEX_KEY
 # test done
 
 coin = 'BTC'
-symbol = symbol_create('edgex',coin)
+symbol = symbol_create('edgex',coin,is_spot=False)
 
 async def main():
     edgex = await create_exchange('edgex', EDGEX_KEY)
 
+    #available_symbols = await edgex.get_available_symbols()
+    #print(available_symbols)
+    #return
+
     price = await edgex.get_mark_price(symbol)
     print(price)
+
+    res = await edgex.create_order(symbol, 'buy', 0.02, price=3000)
+    print(res)
+    #return
+
+    
     
     coll = await edgex.get_collateral()
     print(coll)

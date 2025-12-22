@@ -24,6 +24,9 @@ test_bool = {
 async def main():
     lighter = await create_exchange('lighter',LIGHTER_KEY)
 
+    available_symbols = await lighter.get_available_symbols()
+    print(available_symbols)
+    return
     price = await lighter.get_mark_price(symbol)
     print(price)
 

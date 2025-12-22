@@ -29,7 +29,7 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
         return self._cached_auth_token
     
     def get_perp_quote(self, symbol):
-        return 'USD'
+        return 'USDC'
     
     # use initialize when using main account
     #async def initialize(self):
@@ -46,7 +46,26 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
                         "price_decimals": m["supported_price_decimals"],
                         "market_type":m["market_type"], # perp or spot
                     }
+        
+        self.update_available_symbols()
         return self
+    
+    def update_available_symbols(self):
+        self.available_symbols['perp'] = []
+        self.available_symbols['spot'] = []
+        for k, v in self.market_info.items():
+            #print(k,v)
+            market_type = v.get('market_type','perp')
+            if market_type == 'perp':
+                coin = k
+                quote = self.get_perp_quote(k)
+                composite_symbol = f"{coin}-{quote}"
+                self.available_symbols['perp'].append(composite_symbol)
+                #self.available_symbols['perp'].append(coin)
+
+            else:
+                self.available_symbols['spot'].append(k)
+        
     
     async def close(self):
         await self.client.close()

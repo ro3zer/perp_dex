@@ -14,6 +14,9 @@ async def main():
     #print(backpack)
     #position = await backpack.get_position(symbol)
     #print(position)
+    available_symbols = await backpack.get_available_symbols()
+    print(available_symbols)
+    return
     
     price = await backpack.get_mark_price(symbol)
     print(price)

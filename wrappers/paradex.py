@@ -19,6 +19,9 @@ class ParadexExchange(MultiPerpDexMixin, MultiPerpDex):
             }
         })
     
+    async def init(self):
+        return self
+    
     def get_perp_quote(self, symbol):
         return 'USD'
     

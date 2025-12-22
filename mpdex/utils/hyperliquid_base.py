@@ -207,7 +207,39 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
 
         if self.fetch_by_ws:
             await self._create_ws_client()
+
+        self.update_available_symbols()
+
         return self
+
+    def update_available_symbols(self):
+        # perp initialization
+        self.available_symbols['perp'] = {}
+        for dex in self.dex_list:
+            self.available_symbols['perp'][dex] = []
+        self.available_symbols['spot'] = []
+        
+        for k in self.perp_asset_map:
+            quote = self.get_perp_quote(k)
+            quote_display = quote
+            for onc, disp in zip(STABLES, STABLES_DISPLAY):
+                if onc == quote:
+                    quote_display = disp
+                
+            if ':' in k:
+                dex = k.split(':')[0]
+                coin = k.split(':')[1]
+            else:
+                dex = 'hl'
+                coin = k
+            composite_symbol = f"{coin}-{quote_display}"
+            self.available_symbols['perp'][dex].append(composite_symbol)
+            #self.available_symbols['perp'][dex].append(coin)
+            #print(k,v,dex,quote,quote_display,composite_symbol)
+        #return
+
+        for k in self.spot_asset_pair_to_index:
+            self.available_symbols['spot'].append(k)
 
     async def _create_ws_client(self):
         if self.ws_client is not None:

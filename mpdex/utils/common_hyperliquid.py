@@ -401,41 +401,48 @@ async def init_perp_meta_cache(s: aiohttp.ClientSession,
     #print(perp_metas_raw)
     
     perp_asset_map.clear()
-    
-
-    for meta_idx, meta in enumerate(perp_metas_raw):
-        uni = (meta or {}).get("universe") or []
-        collateral_token_id = (meta or {}).get("collateralToken") or 0
-        for local_idx, a in enumerate(uni):
-            if not isinstance(a, dict):
-                continue
-            name = a.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            if a.get("isDelisted", False):
-                continue
-            try:
-                szd = int(a.get("szDecimals") or 0)
-            except Exception:
-                szd = 0
-
-            try:
-                max_lev = int(a.get("maxLeverage") or 1)
-            except Exception:
-                max_lev = 1
-
-            try:
-                isolated = int(a.get("onlyIsolated") or False)
-            except Exception:
-                isolated = False
+    try:
+        for meta_idx, meta in enumerate(perp_metas_raw):
             
-            if meta_idx == 0:
-                key = name.upper()                 # 메인(HL)
-                asset_id = int(local_idx)
-            else:
-                key = name                         # HIP-3: 'dex:COIN'
-                asset_id = 100000 + meta_idx * 10000 + local_idx
+            uni = (meta or {}).get("universe") or []
+            collateral_token_id = (meta or {}).get("collateralToken") or 0
+            
+            for local_idx, a in enumerate(uni):
+                #print(meta_idx,local_idx,a)
+                if not isinstance(a, dict):
+                    continue
+                name = a.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
 
-            perp_asset_map[key] = (asset_id, szd, max_lev, isolated, collateral_token_id)
+                if a.get("isDelisted", False):
+                    continue
+                
+                try:
+                    szd = int(a.get("szDecimals") or 0)
+                except Exception:
+                    szd = 0
+
+                try:
+                    max_lev = int(a.get("maxLeverage") or 1)
+                except Exception:
+                    max_lev = 1
+
+                try:
+                    isolated = int(a.get("onlyIsolated") or False)
+                except Exception:
+                    isolated = False
+                
+                if meta_idx == 0:
+                    key = name.upper()                 # 메인(HL)
+                    asset_id = int(local_idx)
+                else:
+                    key = name                         # HIP-3: 'dex:COIN'
+                    asset_id = 100000 + meta_idx * 10000 + local_idx
+
+                
+                perp_asset_map[key] = (asset_id, szd, max_lev, isolated, collateral_token_id)
+    except Exception as e:
+        print(e)
 
     return True

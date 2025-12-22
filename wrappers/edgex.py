@@ -13,6 +13,7 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
     def __init__(self,account_id,private_key):
         super().__init__()
         self.base_url = 'https://pro.edgex.exchange'
+        self.base_url_spot = 'https://spot.edgex.exchange'
         self.account_id = account_id
         self.private_key_hex = private_key.replace("0x", "")
                 
@@ -22,8 +23,29 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
     
     async def init(self):
         await self.get_meta_data()
+        await self.get_meta_data(is_spot=True)
+        self.update_available_symbols()
+        
         return self
 
+    def update_available_symbols(self):
+        self.available_symbols['spot'] = []
+        self.available_symbols['perp'] = []
+        
+        for k, v in self.market_info.items():
+            if '/' in k:
+                # spot
+                self.available_symbols['spot'].append(k)
+                #print(k)
+            else:
+                # perp
+                coin = k.split('USD')[0]
+                quote_id = v['contract']['quoteCoinId']
+                quote = self.get_perp_quote(coin)
+                composite_symbol = f"{coin}-{quote}"
+                #print(k,quote,quote_id)
+                self.available_symbols['perp'].append(composite_symbol)
+            
     def get_perp_quote(self, symbol):
         return 'USD'
     
@@ -32,34 +54,57 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
         precision = abs(step.as_tuple().exponent)
         return value.quantize(step, rounding=ROUND_DOWN)
     
-    async def get_meta_data(self):
-        url = f"{self.base_url}/api/v1/public/meta/getMetaData"
+    async def get_meta_data(self,is_spot=False):
+        if is_spot:
+            url = f"{self.base_url_spot}/api/v1/public/meta/getMetaData"
+        else:
+            url = f"{self.base_url}/api/v1/public/meta/getMetaData"
+
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
                 if resp.status != 200:
                     #print(f"[get_meta_data] HTTP {resp.status}")
                     return None
                 res = await resp.json()
+                
                 data = res.get("data", {})
                 meta = data
-                contract_list = data.get("contractList", [])
+                if is_spot:
+                    market_list = data.get("symbolList", [])
+                else:
+                    market_list = data.get("contractList", [])
 
-                for contract in contract_list:
-                    name = contract["contractName"]
+                for market in market_list:
+                    
+                    name = market["symbolName"] if is_spot else market["contractName"]
+                    
                     if "TEMP" in name:
                         continue
-                    self.market_info[name] = {
-                        "contract": contract,
-                        "meta": meta,
-                        "contractId": contract["contractId"],
-                        "tickSize": contract["tickSize"],
-                        "stepSize": contract["stepSize"],
-                        "minOrderSize": contract["minOrderSize"],
-                        "maxOrderSize": contract["maxOrderSize"],
-                        "defaultTakerFeeRate": contract["defaultTakerFeeRate"],
-                    }
 
-                return contract_list
+                    if is_spot:
+                        self.market_info[name] = {
+                            "contract": market,
+                            "meta": meta,
+                            "symbolId": market["symbolId"],
+                            "tickSize": market["tickSize"],
+                            "stepSize": market["stepSize"],
+                            "minOrderSize": market["minOrderSize"],
+                            "maxOrderSize": market["maxOrderSize"],
+                            "defaultTakerFeeRate": market["takerFeeRate"],
+                        }
+                    else:
+                        self.market_info[name] = {
+                            "contract": market,
+                            "meta": meta,
+                            "contractId": market["contractId"],
+                            "tickSize": market["tickSize"],
+                            "stepSize": market["stepSize"],
+                            "minOrderSize": market["minOrderSize"],
+                            "maxOrderSize": market["maxOrderSize"],
+                            "defaultTakerFeeRate": market["defaultTakerFeeRate"],
+                        }
+
+                return market_list
     
     def generate_signature(self, method, path, params, timestamp=None):
         if not timestamp:
@@ -85,122 +130,159 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
         
         return stark_signature, timestamp
 
-    async def get_mark_price(self,symbol):
+    async def get_mark_price(self, symbol):
+        # spot has no restapi endpoint, have to use ws
+        is_spot = '/' in symbol
+        if is_spot:
+            print("spot is not supported yet")
+            return
+
         contract_info = self.market_info[symbol]
-        contract_id = contract_info['contractId']
+        market_id = contract_info['contractId']
+        params = {"contractId": market_id}
         oracle_url = f"{self.base_url}/api/v1/public/quote/getTicker"
+            
         async with aiohttp.ClientSession() as session:
-            async with session.get(oracle_url, params={"contractId": contract_id}) as resp:
+            async with session.get(oracle_url, params=params) as resp:
                 ticker_data = await resp.json()
+                #print(ticker_data)
                 last_price = Decimal(ticker_data["data"][0]["lastPrice"])
                 return last_price
 
     async def create_order(self, symbol, side, amount, price=None, order_type='market'):
-        LIMIT_ORDER_WITH_FEES = 3
+        is_spot = '/' in symbol
+        if is_spot:
+            print("spot is not supported yet")
+            return
         if price != None:
             order_type = 'limit'
-            
+
+        time_in_force = 'IMMEDIATE_OR_CANCEL' if order_type.upper() == 'MARKET' else 'GOOD_TIL_CANCEL'
+        
         contract_info = self.market_info[symbol]
-        contract_id = contract_info['contractId']
         tick_size = Decimal(contract_info['tickSize'])
         step_size = contract_info['stepSize']
-        resolution = Decimal(int(contract_info['contract']['starkExResolution'], 16))
-        fee_rate = Decimal(contract_info['defaultTakerFeeRate'])
-
-        # Oracle price fetch
-        oracle_url = f"{self.base_url}/api/v1/public/quote/getTicker"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(oracle_url, params={"contractId": contract_id}) as resp:
-                ticker_data = await resp.json()
-                oracle_price = Decimal(ticker_data["data"][0]["oraclePrice"])
-
-        # Price calculation
-        if order_type.upper() == 'MARKET':
-            if side.upper() == 'BUY':
-                price = oracle_price * Decimal("1.1")
-                price = price.quantize(tick_size, rounding=ROUND_HALF_UP)
-            else:
-                price = oracle_price * Decimal("0.9")
-                price = price.quantize(tick_size, rounding=ROUND_HALF_UP)
-        else:
-            price = Decimal(price).quantize(tick_size, rounding=ROUND_HALF_UP)
 
         value = price * Decimal(amount)
         value = self.round_step_size(value, '0.0001')
         size = Decimal(amount)
         size = self.round_step_size(size, step_size)
-        
-        time_in_force = 'IMMEDIATE_OR_CANCEL' if order_type.upper() == 'MARKET' else 'GOOD_TIL_CANCEL'
-        is_buy = side.upper() == 'BUY'
 
         client_order_id = str(uuid.uuid4())
-        l2_nonce = int(hashlib.sha256(client_order_id.encode()).hexdigest()[:8], 16)
-        l2_expire_time = str(int(time.time() * 1000) + 14 * 24 * 60 * 60 * 1000)
-        expire_time = str(int(l2_expire_time) - 10 * 24 * 60 * 60 * 1000)
 
-        amt_synth = int((size * resolution).to_integral_value())
-        amt_coll = int((value * Decimal("1e6")).to_integral_value())
-        amt_fee = int((value * fee_rate * Decimal("1e6")).to_integral_value())
-        expire_ts = int(int(l2_expire_time) / (1000 * 60 * 60))
+        if is_spot:
+            symbol_id = contract_info['symbolId']
+            
+            body = {
+                "price": str(price if order_type.upper() != 'MARKET' else 0),
+                "size": str(size),
+                "type": order_type.upper(),
+                "timeInForce": time_in_force,
+                "reduceOnly": 'false',
+                "symbolId": symbol_id,
+                "side": side.upper(),
+                "clientOrderId": client_order_id,
+            }
+            print(body)
+            
+        else:
+            LIMIT_ORDER_WITH_FEES = 3
+            
+            contract_id = contract_info['contractId']
+            
+            resolution = Decimal(int(contract_info['contract']['starkExResolution'], 16))
+            fee_rate = Decimal(contract_info['defaultTakerFeeRate'])
 
-        asset_id_synth = int(contract_info['contract']['starkExSyntheticAssetId'], 16)
-        asset_id_coll = int(contract_info['meta']['global']['starkExCollateralCoin']['starkExAssetId'], 16)
+            # Price calculation
+            if order_type.upper() == 'MARKET':
+                # Oracle price fetch
+                oracle_url = f"{self.base_url}/api/v1/public/quote/getTicker"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(oracle_url, params={"contractId": contract_id}) as resp:
+                        ticker_data = await resp.json()
+                        oracle_price = Decimal(ticker_data["data"][0]["oraclePrice"])
+                if side.upper() == 'BUY':
+                    price = oracle_price * Decimal("1.1")
+                    price = price.quantize(tick_size, rounding=ROUND_HALF_UP)
+                else:
+                    price = oracle_price * Decimal("0.9")
+                    price = price.quantize(tick_size, rounding=ROUND_HALF_UP)
+            else:
+                price = Decimal(price).quantize(tick_size, rounding=ROUND_HALF_UP)
 
-        # L2 order hash
-        h = pedersen_hash(asset_id_coll if is_buy else asset_id_synth,
-                          asset_id_synth if is_buy else asset_id_coll)
-        h = pedersen_hash(h, asset_id_coll)
-        packed_0 = (amt_coll if is_buy else amt_synth)
-        packed_0 = (packed_0 << 64) + (amt_synth if is_buy else amt_coll)
-        packed_0 = (packed_0 << 64) + amt_fee
-        packed_0 = (packed_0 << 32) + l2_nonce
-        h = pedersen_hash(h, packed_0)
-        packed_1 = LIMIT_ORDER_WITH_FEES
-        pid = int(self.account_id)
-        packed_1 = (packed_1 << 64) + pid
-        packed_1 = (packed_1 << 64) + pid
-        packed_1 = (packed_1 << 64) + pid
-        packed_1 = (packed_1 << 32) + expire_ts
-        packed_1 = (packed_1 << 17)
-        h = pedersen_hash(h, packed_1)
+            
+            
+            is_buy = side.upper() == 'BUY'
 
-        private_key_int = int(self.private_key_hex, 16)
-        r, s = sign(h, private_key_int)
-        l2_signature = r.to_bytes(32, "big").hex() + s.to_bytes(32, "big").hex()
+            
+            l2_nonce = int(hashlib.sha256(client_order_id.encode()).hexdigest()[:8], 16)
+            l2_expire_time = str(int(time.time() * 1000) + 14 * 24 * 60 * 60 * 1000)
+            expire_time = str(int(l2_expire_time) - 10 * 24 * 60 * 60 * 1000)
 
-        body = {
-            "accountId": self.account_id,
-            "contractId": contract_id,
-            "price": str(price if order_type.upper() != 'MARKET' else 0),
-            "size": str(size),
-            "type": order_type.upper(),
-            "timeInForce": time_in_force,
-            "side": side.upper(),
-            "reduceOnly": 'false',
-            "clientOrderId": client_order_id,
-            "expireTime": expire_time,
-            "l2Nonce": str(l2_nonce),
-            "l2Value": str(value),
-            "l2Size": str(size),
-            "l2LimitFee": str((value * fee_rate).quantize(Decimal("1.000000"))),
-            "l2ExpireTime": l2_expire_time,
-            "l2Signature": l2_signature
-        }
+            amt_synth = int((size * resolution).to_integral_value())
+            amt_coll = int((value * Decimal("1e6")).to_integral_value())
+            amt_fee = int((value * fee_rate * Decimal("1e6")).to_integral_value())
+            expire_ts = int(int(l2_expire_time) / (1000 * 60 * 60))
+
+            asset_id_synth = int(contract_info['contract']['starkExSyntheticAssetId'], 16)
+            asset_id_coll = int(contract_info['meta']['global']['starkExCollateralCoin']['starkExAssetId'], 16)
+
+            # L2 order hash
+            h = pedersen_hash(asset_id_coll if is_buy else asset_id_synth,
+                            asset_id_synth if is_buy else asset_id_coll)
+            h = pedersen_hash(h, asset_id_coll)
+            packed_0 = (amt_coll if is_buy else amt_synth)
+            packed_0 = (packed_0 << 64) + (amt_synth if is_buy else amt_coll)
+            packed_0 = (packed_0 << 64) + amt_fee
+            packed_0 = (packed_0 << 32) + l2_nonce
+            h = pedersen_hash(h, packed_0)
+            packed_1 = LIMIT_ORDER_WITH_FEES
+            pid = int(self.account_id)
+            packed_1 = (packed_1 << 64) + pid
+            packed_1 = (packed_1 << 64) + pid
+            packed_1 = (packed_1 << 64) + pid
+            packed_1 = (packed_1 << 32) + expire_ts
+            packed_1 = (packed_1 << 17)
+            h = pedersen_hash(h, packed_1)
+
+            private_key_int = int(self.private_key_hex, 16)
+            r, s = sign(h, private_key_int)
+            l2_signature = r.to_bytes(32, "big").hex() + s.to_bytes(32, "big").hex()
+
+            body = {
+                "accountId": self.account_id,
+                "contractId": contract_id,
+                "price": str(price if order_type.upper() != 'MARKET' else 0),
+                "size": str(size),
+                "type": order_type.upper(),
+                "timeInForce": time_in_force,
+                "side": side.upper(),
+                "reduceOnly": 'false',
+                "clientOrderId": client_order_id,
+                "expireTime": expire_time,
+                "l2Nonce": str(l2_nonce),
+                "l2Value": str(value),
+                "l2Size": str(size),
+                "l2LimitFee": str((value * fee_rate).quantize(Decimal("1.000000"))),
+                "l2ExpireTime": l2_expire_time,
+                "l2Signature": l2_signature
+            }
 
         method = "POST"
         path = "/api/v1/private/order/createOrder"
         signature, ts = self.generate_signature(method, path, body)
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url=f"{self.base_url}{path}",
-                json=body,
-                headers={
+        url = f"{self.base_url_spot}{path}" if is_spot else f"{self.base_url}{path}"
+        headers = {
                     "Content-Type": "application/json",
                     "Accept": "application/json",
                     "X-edgeX-Api-Timestamp": ts,
-                    "X-edgeX-Api-Signature": signature
+                    "X-edgeX-Api-Signature": signature,
                 }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url=url,
+                json=body,
+                headers=headers
             ) as resp:
                 return await resp.json()
 

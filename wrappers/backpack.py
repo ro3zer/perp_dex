@@ -14,6 +14,31 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
         self.BASE_URL = "https://api.backpack.exchange/api/v1"
         self.COLLATERAL_SYMBOL = 'USDC'
 
+    async def init(self):
+        await self.update_avaiable_symbols()
+        return self
+
+    async def update_avaiable_symbols(self):
+        self.available_symbols['perp'] = []
+        self.available_symbols['spot'] = []
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{self.BASE_URL}/markets") as resp:
+                result = await resp.json()
+                for v in result:
+                    symbol = v.get("symbol")
+                    base_symbol = v.get("baseSymbol")
+                    quote = v.get("quoteSymbol")
+                    market_type = v.get("marketType")
+                    if market_type == 'PERP':
+                        composite_symbol = f"{base_symbol}-{quote}"
+                        self.available_symbols['perp'].append(composite_symbol)
+                    else:
+                        composite_symbol = f"{base_symbol}/{quote}"
+                        self.available_symbols['spot'].append(composite_symbol)
+                    print(market_type,base_symbol,quote,symbol)
+        
+
     def _generate_signature(self, instruction):
         private_key_bytes = base64.b64decode(self.PRIVATE_KEY)
         signing_key = nacl.signing.SigningKey(private_key_bytes)
@@ -29,7 +54,7 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
         return str(n)
     
     def get_perp_quote(self, symbol):
-        return 'USD'
+        return 'USDC'
     
     def parse_orders(self, orders):
         if not orders:

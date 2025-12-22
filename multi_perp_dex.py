@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 class MultiPerpDex(ABC):
     def __init__(self):
         self.has_spot = False
+        self.available_symbols = {}
 
     @abstractmethod
     async def create_order(self, symbol, side, amount, price=None, order_type='market'):
@@ -33,6 +34,9 @@ class MultiPerpDex(ABC):
         pass
 
 class MultiPerpDexMixin:
+    async def get_available_symbols(self):
+        return self.available_symbols
+
     async def get_open_orders(self, symbol):
         return await self.exchange.fetch_open_orders(symbol)
     
