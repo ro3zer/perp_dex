@@ -405,6 +405,41 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
                     if parsed["size"] and parsed["side"] != "flat":
                         return parsed
         return None
+    
+    async def get_spot_balance(self, coin: str = None) -> dict:
+        if "/" in coin: # symbol 대비
+            coin = coin.split("/")[0]
+
+        if self.fetch_by_ws:
+            try:
+                return await self.get_spot_balance_ws(coin)
+            except Exception as e:
+                print(f"hyperliquid: get_collateral falling back to rest api / error in ws {e}")
+                pass
+        print('rest api not supported for get_spot_balance')
+        
+    async def get_spot_balance_ws(self, coin: str = None, timeout: float = 2.0) -> dict:
+        default_json = {"total": 0.0, "available": 0.0, "locked": 0.0, "entry_ntl":0.0}
+        address = (self.vault_address or self.wallet_address or "").lower()
+        if not address:
+            return default_json
+        
+        if not self.ws_client:
+            await self._create_ws_client()
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.ws_client.get_margin_by_dex_for_user(address):
+                break
+            await asyncio.sleep(0.05)
+        balances = self.ws_client.get_balances_by_user(address) or {}
+
+        spot_balances = balances.get("spot_balance",{})
+        if coin:
+            spot_balances = spot_balances.get(coin, default_json)
+            spot_balances = {coin.upper(): spot_balances}
+
+        return spot_balances
 
     async def get_collateral(self):
         if self.fetch_by_ws:

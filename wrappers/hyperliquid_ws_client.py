@@ -813,16 +813,26 @@ class HLWSClientRaw:
             data = msg.get("data") or {}
             u = str(data.get("user") or "").lower().strip()
             balances = {}
+            spot_balance = {} # balances는 기존 다른 코드들을 위해서 안건드림
             for b in (data.get("spotState") or {}).get("balances", []) or []:
                 if not isinstance(b, dict):
                     continue
                 try:
                     name = str(b.get("coin") or b.get("tokenName") or b.get("token") or "").upper()
                     total = float(b.get("total") or 0.0)
+                    entry_ntl = float(b.get("entryNtl") or 0.0)
+                    hold = float(b.get("hold") or 0.0)
+                    available = total - hold
                     if name:
                         balances[name] = total
+                        spot_balance[name] = {"total":total,
+                                               "available":available,
+                                               "locked":hold,
+                                               "entry_ntl":entry_ntl,
+                                               }
                 except Exception:
                     continue
+            balances['spot_balance'] = spot_balance
             if u:
                 self._user_balances[u] = balances
             return

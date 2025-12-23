@@ -35,6 +35,10 @@ async def main():
 
     available_symbols = await hyperliquid.get_available_symbols()
     print(available_symbols)
+
+    res = await hyperliquid.get_spot_balance_ws("UBTC")
+    print(res)
+
     return
     
     while False:
