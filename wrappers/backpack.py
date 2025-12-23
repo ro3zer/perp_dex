@@ -86,6 +86,89 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
     def get_perp_quote(self, symbol):
         return 'USDC'
     
+    async def get_spot_balance(self, coin: str = None) -> dict:
+        """
+        GET /api/v1/capital (instruction: balanceQuery)
+        
+        응답 예시:
+        {
+          "BTC": { "available": "0.1", "locked": "0.01", "staked": "0" },
+          "USDC": { "available": "1000", "locked": "50", "staked": "0" },
+          ...
+        }
+        
+        반환:
+        - coin이 None: { "BTC": { available, locked, staked, total }, "USDC": {...}, ... }
+        - coin이 지정됨: { "BTC": { available, locked, staked, total } } (해당 코인만)
+        - 코인이 없으면 빈 dict 반환
+        """
+        if coin:
+            if "/" in coin: # symbol 형태로 들어온 경우
+                coin = coin.split("/")[0]
+
+        timestamp = str(int(time.time() * 1000))
+        window = "5000"
+        instruction_type = "balanceQuery"
+
+        signing_string = f"instruction={instruction_type}&timestamp={timestamp}&window={window}"
+        signature = self._generate_signature(signing_string)
+
+        headers = {
+            "X-API-KEY": self.API_KEY,
+            "X-SIGNATURE": signature,
+            "X-TIMESTAMP": timestamp,
+            "X-WINDOW": window,
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{self.BASE_URL}/capital", headers=headers) as resp:
+                # 에러 응답 처리
+                if resp.status >= 400:
+                    ct = (resp.headers.get("content-type") or "").lower()
+                    if "application/json" in ct:
+                        body = await resp.json()
+                    else:
+                        body = await resp.text()
+                    raise RuntimeError(f"get_spot_balance failed: {resp.status} {body}")
+
+                data = await resp.json()
+
+        # data: { "COIN": { "available": str, "locked": str, "staked": str }, ... }
+        if not isinstance(data, dict):
+            return {}
+
+        def _parse_balance(bal: dict) -> dict:
+            avail = self._to_decimal(bal.get("available") or "0")
+            locked = self._to_decimal(bal.get("locked") or "0")
+            staked = self._to_decimal(bal.get("staked") or "0")
+            total = avail + locked + staked
+            return {
+                "available": float(avail),
+                "locked": float(locked),
+                "staked": float(staked),
+                "total": float(total),
+            }
+
+        # 특정 코인만 요청
+        if coin is not None:
+            coin_upper = coin.upper()
+            if coin_upper in data and isinstance(data[coin_upper], dict):
+                return {coin_upper: _parse_balance(data[coin_upper])}
+            return {coin_upper: {
+                "available": 0,
+                "locked": 0,
+                "staked": 0,
+                "total": 0,
+            }}
+
+        # 전체 반환
+        result = {}
+        for c, bal in data.items():
+            if isinstance(bal, dict):
+                result[c] = _parse_balance(bal)
+
+        return result
+
     def parse_orders(self, orders):
         if not orders:
             return []

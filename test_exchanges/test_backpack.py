@@ -25,10 +25,12 @@ async def main():
     price = await backpack.get_mark_price(symbol)
     print(price)
 
-    print(symbol)
+    spot_amount = await backpack.get_spot_balance("BTC")
+    print(spot_amount)
+    #print(symbol)
 
-    res = await backpack.create_order(symbol, 'buy', 0.015) #, price=86000)
-    print(res)
+    #res = await backpack.create_order(symbol, 'buy', 0.015) #, price=86000)
+    #print(res)
     await asyncio.sleep(0.2)
     return
     
