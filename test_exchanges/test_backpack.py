@@ -6,7 +6,7 @@ import asyncio
 from keys.pk_backpack import BACKPACK_KEY
 # test done
 
-coin = 'BTC/USDC'
+coin = 'SOL/USDC'
 symbol = symbol_create('backpack',coin,is_spot=True)
 
 async def main():
@@ -27,7 +27,7 @@ async def main():
 
     print(symbol)
 
-    res = await backpack.create_order(symbol, 'buy', 0.00002, price=86000)
+    res = await backpack.create_order(symbol, 'buy', 0.015) #, price=86000)
     print(res)
     await asyncio.sleep(0.2)
     return
