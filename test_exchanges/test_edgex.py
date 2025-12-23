@@ -7,8 +7,8 @@ from keys.pk_edgex import EDGEX_KEY
 
 # test done
 
-coin = 'BTC'
-symbol = symbol_create('edgex',coin,is_spot=False)
+coin = 'ETH/USDC'
+symbol = symbol_create('edgex',coin,is_spot=True)
 
 async def main():
     edgex = await create_exchange('edgex', EDGEX_KEY)

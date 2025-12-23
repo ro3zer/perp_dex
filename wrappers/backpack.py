@@ -4,6 +4,7 @@ import uuid
 import nacl.signing
 import aiohttp
 from multi_perp_dex import MultiPerpDex, MultiPerpDexMixin
+from decimal import Decimal, ROUND_DOWN
 
 class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
     def __init__(self,api_key,secret_key):
@@ -36,6 +37,8 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
                     else:
                         composite_symbol = f"{base_symbol}/{quote}"
                         self.available_symbols['spot'].append(composite_symbol)
+                        #print(v)
+                        #break
                     #print(market_type,base_symbol,quote,symbol)
         
 
@@ -45,13 +48,40 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
         signature = signing_key.sign(instruction.encode())
         return base64.b64encode(signature.signature).decode()
 
-    def _format_number(self, n):
-        if isinstance(n, float):
-            if n.is_integer():
-                return str(int(n))
-            else:
-                return str(n).rstrip('0').rstrip('.')
-        return str(n)
+    @staticmethod
+    def _to_decimal(v) -> Decimal:
+        """
+        float/int/str → Decimal 변환.
+        - float일 경우 repr() 대신 format(v, 'f')로 고정소수점 문자열을 만든 뒤 Decimal로 변환
+        - 이미 Decimal이면 그대로 반환
+        """
+        if isinstance(v, Decimal):
+            return v
+        if isinstance(v, float):
+            # format(0.00002, 'f') → '0.000020' (지수 표기 없음)
+            return Decimal(format(v, 'f'))
+        # int, str 등
+        return Decimal(str(v))
+
+    def _format_number(self, n, step: str | None = None) -> str:
+        """
+        Decimal/float/int → 고정소수점 문자열 (지수 표기 없음).
+        - step이 주어지면 해당 소수점 자릿수에 맞춰 quantize (ROUND_DOWN)
+        - trailing zeros 제거
+        """
+        d = self._to_decimal(n)
+
+        if step:
+            step_d = self._to_decimal(step)
+            d = d.quantize(step_d, rounding=ROUND_DOWN)
+
+        s = format(d, 'f')  # 고정 소수점
+
+        # trailing zeros 정리
+        if '.' in s:
+            s = s.rstrip('0').rstrip('.')
+
+        return s
     
     def get_perp_quote(self, symbol):
         return 'USDC'
@@ -79,7 +109,12 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
     async def get_mark_price(self,symbol):
         async with aiohttp.ClientSession() as session:
             res = await self._get_mark_prices(session, symbol)
-            price = res[0]['markPrice']
+            if isinstance(res, list):
+                # perp
+                price = res[0]['markPrice']
+            else:
+                # spot
+                price = res['lastPrice']
             return price
 
     async def create_order(self, symbol, side, amount, price=None, order_type='market'):
@@ -96,26 +131,33 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
             market_info = await self._get_market_info(session, symbol)
             tick_size = float(market_info['filters']['price']['tickSize'])
             step_size = float(market_info['filters']['quantity']['stepSize'])
+                       
+            step_d = self._to_decimal(step_size)
+            amount_d = self._to_decimal(amount)
+            quantity_d = (amount_d / step_d).to_integral_value(rounding=ROUND_DOWN) * step_d
+            quantity_str = self._format_number(quantity_d, step_size)
 
-            # ✔️ amount는 수량 자체이므로 그대로 사용 (단, stepSize에 맞춰 정리만)
-            quantity = round(round(float(amount) / step_size) * step_size, len(str(step_size).split('.')[-1]))
-
+            price_str = None
             if order_type == "Limit":
-                price = round(round(float(price) / tick_size) * tick_size, len(str(tick_size).split('.')[-1]))
+                tick_d = self._to_decimal(tick_size)
+                price_d = self._to_decimal(price)
+                price_d = (price_d / tick_d).to_integral_value(rounding=ROUND_DOWN) * tick_d
+                price_str = self._format_number(price_d, tick_size)
 
             timestamp = str(int(time.time() * 1000))
             window = "5000"
             instruction_type = "orderExecute"
-
+            #print(quantity_str,price_str)
+            #return
             order_data = {
                 "clientId": client_id,
                 "orderType": order_type,
-                "quantity": self._format_number(quantity),
+                "quantity": quantity_str,
                 "side": side,
                 "symbol": symbol
             }
             if order_type == "Limit":
-                order_data["price"] = self._format_number(price)
+                order_data["price"] = price_str #self._format_number(price)
 
             sorted_data = "&".join(f"{k}={v}" for k, v in sorted(order_data.items()))
             signing_string = f"instruction={instruction_type}&{sorted_data}&timestamp={timestamp}&window={window}"
@@ -201,10 +243,11 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
         return coll_return
 
     async def _get_mark_prices(self, session, symbol):
-        """
-        [{'fundingRate': '0.0000125', 'indexPrice': '95049.3749273', 'markPrice': '95075.00410592', 'nextFundingTimestamp': 1763362800000, 'symbol': 'BTC_USDC_PERP'}]
-        """
-        url = f"{self.BASE_URL}/markPrices"
+        is_spot = "PERP" not in symbol
+        if is_spot:
+            url = f"{self.BASE_URL}/ticker"
+        else:
+            url = f"{self.BASE_URL}/markPrices"
         headers = {"Content-Type": "application/json; charset=utf-8"}
         params = {"symbol": symbol}
         async with session.get(url, headers=headers, params=params) as resp:
