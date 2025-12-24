@@ -113,16 +113,20 @@ async def create_exchange(exchange_platform: str, key_params=None):  # [MODIFIED
         raise ValueError(f"Unsupported exchange: {exchange_platform}")
 
 SYMBOL_FORMATS = {
-    "paradex":  lambda c: f"{c}-USD-PERP",
-    "edgex":    lambda c: f"{c}USD",
-    "grvt":     lambda c: f"{c}_USDT_Perp",
-    "backpack": lambda c: f"{c}_USDC_PERP",
-    "lighter":  lambda c: c,
-    "treadfi.hyperliquid": lambda coin: f"{coin.split(':')[0].lower()}_{coin.split(':')[1].upper()}:PERP-USDC" if ":" in coin else f"{coin.upper()}:PERP-USDC",
-    "variational": lambda coin: coin.upper(), # same
-    "pacifica": lambda coin: coin.upper(), # same
-    "hyperliquid": lambda coin: coin.upper(), # use internal mapping
-    "superstack": lambda coin: coin.upper(), # use internal mapping
+    "paradex":  lambda c, q=None: f"{c}-USD-PERP",
+    "edgex":    lambda c, q=None: f"{c}USD",
+    "grvt":     lambda c, q=None: f"{c}_USDT_Perp",
+    "backpack": lambda c, q=None: f"{c}_USDC_PERP",
+    "lighter":  lambda c, q=None: c,
+    "treadfi.hyperliquid": lambda coin, q=None: (
+        f"{coin.split(':')[0].lower()}_{coin.split(':')[1].upper()}:PERP-{q or 'USDC'}" 
+        if ":" in coin 
+        else f"{coin.upper()}:PERP-{q or 'USDC'}"
+    ),
+    "variational": lambda coin, q=None: coin.upper(), # same
+    "pacifica": lambda coin, q=None: coin.upper(), # same
+    "hyperliquid": lambda coin, q=None: coin.upper(), # use internal mapping
+    "superstack": lambda coin, q=None: coin.upper(), # use internal mapping
 }
 
 SPOT_SYMBOL_FORMATS = {
@@ -134,7 +138,7 @@ SPOT_SYMBOL_FORMATS = {
     "edgex": lambda c: f"{c[0]}/{c[1]}", # BTC/USDC 형태
 }
 
-def symbol_create(exchange_platform: str, coin: str, *, is_spot=False):
+def symbol_create(exchange_platform: str, coin: str, *, is_spot=False, quote=None):
     """spot의 경우 BTC/USDC와 같은 형태, quote가 있음"""
     """perp의 경우 BTC의 형태, dex가 붙으면 xyz:XYZ100 형태, quote가 없음"""
     
@@ -155,6 +159,6 @@ def symbol_create(exchange_platform: str, coin: str, *, is_spot=False):
         # perp가 default
         coin = coin.upper()
         try:
-            return SYMBOL_FORMATS[exchange_platform](coin)
+            return SYMBOL_FORMATS[exchange_platform](coin, quote)
         except KeyError:
             raise ValueError(f"Unsupported exchange: {exchange_platform}, coin: {coin}")
