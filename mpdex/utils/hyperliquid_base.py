@@ -130,7 +130,7 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
         except Exception:
             return (0, 0)
 
-    def _pick_builder_fee_int(self, dex: Optional[str], order_type: str) -> Optional[int]:
+    def _pick_builder_fee_int(self, dex: Optional[str], order_type: str, is_spot: bool = False) -> Optional[int]:
         """
         빌더 fee 선택: dex별 키 → "dex" 공통 키 → "base" 키 순으로 폴백.
         - dex가 주어지면: m[dex] → m["dex"] → m["base"]
@@ -140,6 +140,19 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
             idx = 0 if str(order_type).lower() == "limit" else 1
             m = self.builder_fee_pair or {}
             
+            # spot
+            if is_spot:
+                if "spot" in m:
+                    a, b = self._parse_fee_pair(m["spot"])
+                    return (a, b)[idx]
+
+                if "base" in m:
+                    a, b = self._parse_fee_pair(m["base"])
+                    return (a, b)[idx]
+                
+                return None
+            
+            # perp
             # 1) 개별 DEX(hip3) 키
             if dex and dex in m:
                 a, b = self._parse_fee_pair(m[dex])
@@ -697,6 +710,9 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
         prefer_ws: bool = True,
         timeout: float = 5.0,
     ):
+        if "/" in symbol:
+            is_spot = True
+
         is_buy = side.lower() == "buy"
         raw = symbol.strip()
         slip = float(slippage or 0.0)
@@ -737,7 +753,7 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
             order_obj["c"] = client_id
         action = {"type": "order", "orders": [order_obj], "grouping": "na"}
         if self.builder_code:
-            fee = self._pick_builder_fee_int(dex, ord_type)
+            fee = self._pick_builder_fee_int(dex, ord_type, is_spot=is_spot)
             action["builder"] = {"b": self.builder_code.lower(), **({"f": int(fee)} if fee is not None else {})}
 
         payload = await self._make_signed_payload(action)

@@ -21,7 +21,7 @@ HYPERLIQUID_KEY = HyperliquidKEY(
     by_agent = True,
     vault_address = None,
     builder_code = None,
-    builder_fee_pair = None, # { 'base':(10,10), 'dex': (10,10) }, 을 의미 dex없으면 base로 함, dex를 상세하게 'xyz': (10,10) 이런형태로 나타내도됨, 기본은 'dex'를 따름
+    builder_fee_pair = None, # { 'spot':(20,20), 'base':(10,10), 'dex': (10,10) }, 을 의미 dex없으면 base로 함, dex를 상세하게 'xyz': (10,10) 이런형태로 나타내도됨, 기본은 'dex'를 따름
     # 표현 방식 예제, (1,2), [1,2], 1
     # (1,2): 1=limit fee, 2=market fee
     # [1,2]: 1=limit fee, 2=market fee

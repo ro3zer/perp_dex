@@ -25,7 +25,7 @@ test_bool = [True, True, False]
 async def main():
     
     HYPERLIQUID_KEY.fetch_by_ws = True
-    HYPERLIQUID_KEY.builder_fee_pair["base"] = (10, 10)
+    #HYPERLIQUID_KEY.builder_fee_pair["base"] = (10, 10)
     hyperliquid = await create_exchange('hyperliquid',HYPERLIQUID_KEY)
     await asyncio.sleep(0.2)
     
@@ -39,6 +39,13 @@ async def main():
     res = await hyperliquid.get_spot_balance_ws("UBTC")
     print(res)
 
+
+    price1 = await hyperliquid.get_mark_price("UBTC/USDC") #,is_spot=is_spot)
+    print(price1)
+
+    l_price = price1*0.97
+    res = await hyperliquid.create_order("UBTC/USDC", 'buy', amount1, price=l_price)
+    print(res)
     return
     
     while False:
