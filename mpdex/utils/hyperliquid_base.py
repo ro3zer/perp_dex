@@ -290,9 +290,9 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
             # signatureChainId, hyperliquidChain은 sign_user_signed_action에서 삽입됨
         }
 
-        # [CHANGED] transfer 전용 서명 사용
-        payload = await self._make_transfer_payload(action)
         try:
+            # [CHANGED] transfer 전용 서명 사용
+            payload = await self._make_transfer_payload(action)
             resp = await self._send_action(payload, prefer_ws=prefer_ws, timeout=timeout)
             return resp
         except Exception as e:
@@ -326,9 +326,9 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
             # signatureChainId, hyperliquidChain은 sign_user_signed_action에서 삽입됨
         }
 
-        # transfer 전용 서명 사용
-        payload = await self._make_transfer_payload(action)
         try:
+            # transfer 전용 서명 사용
+            payload = await self._make_transfer_payload(action)
             resp = await self._send_action(payload, prefer_ws=prefer_ws, timeout=timeout)
             return resp
         except Exception as e:
