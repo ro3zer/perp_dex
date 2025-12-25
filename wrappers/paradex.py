@@ -22,7 +22,7 @@ class ParadexExchange(MultiPerpDexMixin, MultiPerpDex):
     async def init(self):
         return self
     
-    def get_perp_quote(self, symbol):
+    def get_perp_quote(self, symbol, *, is_basic_coll=False):
         return 'USD'
     
     def public_key_from_private_key(self,private_key):

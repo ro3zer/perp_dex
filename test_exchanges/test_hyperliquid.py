@@ -36,7 +36,7 @@ async def main():
     res = await hyperliquid.get_collateral()
     print(res)
     await asyncio.sleep(0.5)
-
+    return
     res = await hyperliquid.transfer_to_spot(10)
     print(res)
     await asyncio.sleep(0.5)

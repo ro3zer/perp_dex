@@ -285,7 +285,7 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
         self._session_ready: bool = False
         self._vr_token: Optional[str] = None  # 메모리 보관
 
-    def get_perp_quote(self, symbol):
+    def get_perp_quote(self, symbol, *, is_basic_coll=False):
         return 'USD'
 
     async def _probe_cookie_valid(self, vr_token: str) -> bool:

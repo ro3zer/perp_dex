@@ -83,7 +83,7 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
 
         return s
     
-    def get_perp_quote(self, symbol):
+    def get_perp_quote(self, symbol, *, is_basic_coll=False):
         return 'USDC'
     
     async def get_spot_balance(self, coin: str = None) -> dict:

@@ -404,7 +404,10 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
             return [raw.upper()]
         return [f"{raw.upper()}/{q}" for q in STABLES]
 
-    def get_perp_quote(self, symbol: str) -> str:
+    def get_perp_quote(self, symbol: str, *, is_basic_coll=False) -> str:
+        if is_basic_coll:
+            return 'USDC'
+        
         dex, coin_key = parse_hip3_symbol(str(symbol).strip())
         _, _, _, _, quote_id = self.perp_asset_map.get(coin_key, (None, 0, 1, False, 0))
         return self.spot_index_to_name.get(quote_id, "USDC")

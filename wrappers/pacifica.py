@@ -69,7 +69,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         if self._http and not self._http.closed:
             await self._http.close()
     
-    def get_perp_quote(self, symbol):
+    def get_perp_quote(self, symbol, *, is_basic_coll=False):
         return 'USD'
     
     async def init(self) -> Dict[str, Any]:

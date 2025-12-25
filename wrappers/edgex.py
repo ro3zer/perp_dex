@@ -46,7 +46,7 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
                 #print(k,quote,quote_id)
                 self.available_symbols['perp'].append(composite_symbol)
             
-    def get_perp_quote(self, symbol):
+    def get_perp_quote(self, symbol, *, is_basic_coll=False):
         return 'USD'
     
     def round_step_size(self, value: Decimal, step_size: str) -> Decimal:

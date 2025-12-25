@@ -39,7 +39,7 @@ class GrvtExchange(MultiPerpDexMixin, MultiPerpDex):
         await self.exchange.load_markets()        
         return self
     
-    def get_perp_quote(self, symbol):
+    def get_perp_quote(self, symbol, *, is_basic_coll=False):
         return 'USD'
     
     async def get_mark_price(self,symbol):
