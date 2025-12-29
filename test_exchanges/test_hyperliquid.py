@@ -30,8 +30,8 @@ async def main():
     await asyncio.sleep(0.2)
     
     # superstack test
-    superstack = await create_exchange('superstack',SUPERSTACK_KEY)
-    await asyncio.sleep(0.2)
+    #superstack = await create_exchange('superstack',SUPERSTACK_KEY)
+    #await asyncio.sleep(0.2)
 
     res = await hyperliquid.get_collateral()
     print(res)

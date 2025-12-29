@@ -24,18 +24,43 @@ test_bool = {
 async def main():
     lighter = await create_exchange('lighter',LIGHTER_KEY)
 
-    available_symbols = await lighter.get_available_symbols()
-    print(available_symbols)
+    #available_symbols = await lighter.get_available_symbols()
+    #print(available_symbols)
     
     #price = await lighter.get_mark_price('ETH')
     #print(price)
+    while True:
+        res1 = await lighter.get_mark_price('ETH/USDC')
+
+        res2 = await lighter.get_mark_price('ETH')
+        print(res1, res2)
+        await asyncio.sleep(0.1)
+        break
+    coll = await lighter.get_collateral()
+    print(coll)
+
+    position = await lighter.get_position('BTC')
+    print(position)
+    await asyncio.sleep(0.5)
+
+    res = await lighter.get_spot_balance('ETH')
+    print(res)
+
+    open_orders = await lighter.get_open_orders('ETH/USDC')
+    print(len(open_orders))
+    print(open_orders)
+    await asyncio.sleep(0.5)
+
+    res = await lighter.cancel_orders('ETH/USDC')
+    print(res)
+    return
 
     #res = await lighter.create_order(symbol, 'buy', 0.01, price=2500)
     #print(res)
     #await asyncio.sleep(0.5)
     
-    coll = await lighter.get_collateral()
-    print(coll)
+    #coll = await lighter.get_collateral()
+    #print(coll)
     
     #res = await lighter.get_spot_balance('ETH')
     #print(res)
