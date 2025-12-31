@@ -75,6 +75,12 @@ async def main():
         print(f"   Error: {e}")
 
     while True:
+        print("\n3. Getting mark price...")
+        try:
+            price = await ex.get_mark_price(symbol)
+            print(f"   Mark price: {price}")
+        except Exception as e:
+            print(f"   Error: {e}")
         # Get orderbook
         print(f"\n7. Getting orderbook for {symbol}...")
         try:
@@ -86,9 +92,8 @@ async def main():
         except Exception as e:
             print(f"   Error: {e}")
         
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
         await ex.unsubscribe_orderbook(symbol)
-        await asyncio.sleep(0.01)
     # Example order (commented out for safety)
     '''
     print("\n8. Creating test order...")

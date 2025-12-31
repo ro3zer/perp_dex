@@ -55,6 +55,10 @@ class StandXWSClient:
     # Auth state
     _authenticated: bool = field(default=False, repr=False)
 
+    # Reconnect state
+    _reconnecting: bool = field(default=False, repr=False)
+    _reconnect_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+
     async def connect(self) -> bool:
         """Connect to WebSocket"""
         async with self._lock:
@@ -94,19 +98,91 @@ class StandXWSClient:
 
     async def _recv_loop(self):
         """Background task to receive messages"""
-        while self._running and self._ws:
+        while self._running:
+            if not self._ws:
+                await asyncio.sleep(0.1)
+                continue
             try:
                 msg = await self._ws.recv()
                 data = json.loads(msg)
                 await self._handle_message(data)
             except websockets.ConnectionClosed:
-                print("[standx_ws] connection closed")
-                break
+                print("[standx_ws] connection closed, reconnecting...")
+                await self._reconnect_with_backoff()
+                continue
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"[standx_ws] recv error: {e}")
                 await asyncio.sleep(0.1)
+
+    async def _reconnect_with_backoff(self) -> None:
+        """Reconnect with exponential backoff"""
+        self._reconnecting = True
+        self._reconnect_event.clear()
+        self._ws = None
+        self._authenticated = False
+        delay = 1.0
+        max_delay = 30.0
+        max_attempts = 10
+
+        try:
+            for attempt in range(max_attempts):
+                if not self._running:
+                    return
+                print(f"[standx_ws] reconnect attempt {attempt + 1}/{max_attempts} in {delay:.1f}s...")
+                await asyncio.sleep(delay)
+
+                try:
+                    self._ws = await websockets.connect(
+                        self.ws_url,
+                        ping_interval=20,
+                        ping_timeout=10,
+                        close_timeout=5,
+                    )
+                    print("[standx_ws] reconnected successfully")
+                    await self._resubscribe()
+                    return
+                except Exception as e:
+                    print(f"[standx_ws] reconnect failed: {e}")
+                    delay = min(max_delay, delay * 2)
+
+            print(f"[standx_ws] reconnect failed after {max_attempts} attempts")
+        finally:
+            self._reconnecting = False
+            self._reconnect_event.set()
+
+    async def _resubscribe(self) -> None:
+        """Resubscribe to all channels after reconnect"""
+        # Re-authenticate if we had a token
+        if self.jwt_token:
+            auth_msg: Dict[str, Any] = {
+                "auth": {
+                    "token": self.jwt_token,
+                    "streams": [
+                        {"channel": "position"},
+                        {"channel": "balance"},
+                    ]
+                }
+            }
+            await self._ws.send(json.dumps(auth_msg))
+            # Wait for auth
+            for _ in range(50):
+                if self._authenticated:
+                    break
+                await asyncio.sleep(0.1)
+
+        # Resubscribe to price channels
+        for symbol in self._price_subs:
+            await self._ws.send(json.dumps({"subscribe": {"channel": "price", "symbol": symbol}}))
+
+        # Resubscribe to depth channels
+        for symbol in self._depth_subs:
+            await self._ws.send(json.dumps({"subscribe": {"channel": "depth_book", "symbol": symbol}}))
+
+        # Resubscribe to user channels
+        for channel in self._user_subs:
+            await self._ws.send(json.dumps({"subscribe": {"channel": channel}}))
 
     async def _handle_message(self, data: Dict[str, Any]):
         """Handle incoming WebSocket message"""
@@ -149,10 +225,24 @@ class StandXWSClient:
 
     async def _send(self, msg: Dict[str, Any]):
         """Send message to WebSocket"""
+        # Wait for reconnect if in progress
+        if self._reconnecting:
+            try:
+                await asyncio.wait_for(self._reconnect_event.wait(), timeout=60.0)
+            except asyncio.TimeoutError:
+                raise RuntimeError("[standx_ws] reconnect timeout")
+
         if not self._ws or not self._running:
             await self.connect()
         if self._ws:
-            await self._ws.send(json.dumps(msg))
+            try:
+                await self._ws.send(json.dumps(msg))
+            except websockets.ConnectionClosed:
+                # Connection closed during send, wait for reconnect
+                if self._reconnecting:
+                    await asyncio.wait_for(self._reconnect_event.wait(), timeout=60.0)
+                    if self._ws:
+                        await self._ws.send(json.dumps(msg))
 
     # ----------------------------
     # Authentication
