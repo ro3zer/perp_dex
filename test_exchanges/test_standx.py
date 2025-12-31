@@ -85,7 +85,8 @@ async def main():
             print(f"   Top bids: {bids}")
         except Exception as e:
             print(f"   Error: {e}")
-
+        
+        await asyncio.sleep(0.01)
         await ex.unsubscribe_orderbook(symbol)
         await asyncio.sleep(0.01)
     # Example order (commented out for safety)

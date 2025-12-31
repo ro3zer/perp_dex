@@ -619,6 +619,7 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         }
 
     async def unsubscribe_orderbook(self, symbol: str):
+        return # 오더북 하나니깐 그냥 놔둠
         """Unsubscribe from orderbook WebSocket channel"""
         if self.ws_client:
             await self.ws_client.unsubscribe_depth(symbol)
