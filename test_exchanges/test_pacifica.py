@@ -19,11 +19,20 @@ async def main():
     coll = await pacifica.get_collateral()
     print(coll)
     await asyncio.sleep(0.1)
-    
+
+    #available_symbols = pacifica.available_symbols.get('perp',[])
+    #print(available_symbols)
+
     price = await pacifica.get_mark_price(symbol) # 강제 250ms 단위 fetch가 이루어짐.
     print(price)
     await asyncio.sleep(0.1)
     
+    res = await pacifica.get_orderbook(symbol)
+    print(res)
+    res = await pacifica.unsubscribe_orderbook(symbol)
+    print(res)
+    await asyncio.sleep(0.01)   
+
     # limit buy
     l_price = price*0.97
     res = await pacifica.create_order(symbol, 'buy', amount, price=l_price)
@@ -34,7 +43,7 @@ async def main():
     h_price = price*1.03
     res = await pacifica.create_order(symbol, 'sell', amount, price=h_price)
     print(res)
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.5)
     
     # market buy
     res = await pacifica.create_order(symbol, 'buy', amount+0.0001)

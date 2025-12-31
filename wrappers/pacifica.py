@@ -36,7 +36,7 @@ def _get_signature_header_and_url(req_type:str):
 
 class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
     # no use of private key, but use agent wallets instead (api)
-    def __init__(self, public_key, agent_public_key, agent_private_key):
+    def __init__(self, public_key, agent_public_key, agent_private_key, *, fetch_by_ws: bool = True, order_by_ws: bool = True):
         super().__init__()
         if not (public_key and agent_public_key and agent_private_key):
             raise ValueError("Pacifica required, pub key, agent pub key, and agent private key")
@@ -53,6 +53,11 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
 
         # 가격 런타임 캐시: { "BTC": {"mark": Decimal, "mid": Decimal|None, "oracle": Decimal|None, "ts": int} }
         self._price_cache: Dict[str, Dict[str, Any]] = {}
+
+        # WebSocket
+        self.fetch_by_ws = fetch_by_ws
+        self.order_by_ws = order_by_ws
+        self.ws_client = None
 
 
     def _session(self) -> aiohttp.ClientSession:
@@ -72,12 +77,12 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
     def get_perp_quote(self, symbol, *, is_basic_coll=False):
         return 'USD'
     
-    async def init(self) -> Dict[str, Any]:
+    async def init(self) -> "PacificaExchange":
         """
         GET /info → 심볼 목록과 tick_size/lot_size 등을 런타임 캐시에 저장
         """
         if self._initialized:
-            return {"ok": True, "cached": True, "symbols": list(self._symbol_list)}
+            return self
 
         url = f"{BASE_URL}/info"
         s = self._session()
@@ -109,8 +114,38 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         self._symbol_meta = meta
         self._symbol_list = sorted(set(symbols))
         self._initialized = True
-        #return {"ok": True, "meta":self._symbol_meta, "symbols": list(self._symbol_list) }
+
+        # Update available symbols
+        self.update_available_symbols()
+
+        # Initialize WebSocket if enabled
+        if self.fetch_by_ws:
+            await self._create_ws_client()
+
         return self
+
+    def update_available_symbols(self):
+        """Update available_symbols dict from _symbol_list"""
+        self.available_symbols['perp'] = []
+        #self.available_symbols['spot'] = []
+        for sym in self._symbol_list:
+            quote = self.get_perp_quote(sym)
+            composite_symbol = f"{sym}-{quote}"
+            self.available_symbols['perp'].append(composite_symbol)
+
+    async def _create_ws_client(self):
+        """Create and initialize WebSocket client from pool"""
+        if self.ws_client is not None:
+            return
+
+        from .pacifica_ws_client import PACIFICA_WS_POOL
+
+        self.ws_client = await PACIFICA_WS_POOL.acquire(
+            public_key=self.public_key,
+            agent_public_key=self.agent_public_key,
+            agent_keypair=self.agent_keypair,
+            subscribe_private=True,
+        )
     
     async def initialize_if_needed(self):  # [ADDED]
         if not self._initialized:
@@ -184,36 +219,87 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         return self._format_with_step(adjusted, step)
 
     async def create_order(self, symbol, side, amount, price=None, order_type='market', *, is_reduce_only=False, slippage = "0.1"):
+        """
+        Create order (WS or REST based on order_by_ws setting)
+        """
         symbol = symbol.upper()
         amount = self._adjust_amount_lot(symbol, amount, rounding=ROUND_DOWN)
+        side_pacifica = "bid" if side.lower() == "buy" else "ask"
 
-        side = "bid" if side.lower() == "buy" else "ask"
-        
         # price가 있냐 없냐로 사실상 정함
         if not price:
             order_type = "market"
+            price_adjusted = None
         else:
             order_type = "limit"
-            price = self._adjust_price_tick(symbol, price, rounding=ROUND_HALF_UP)
+            price_adjusted = self._adjust_price_tick(symbol, price, rounding=ROUND_HALF_UP)
 
+        if self.order_by_ws:
+            try:
+                return await self.create_order_ws(
+                    symbol=symbol,
+                    side=side_pacifica,
+                    amount=amount,
+                    price=price_adjusted,
+                    is_reduce_only=is_reduce_only,
+                    slippage=slippage,
+                )
+            except Exception as e:
+                print(f"[pacifica] create_order WS failed, falling back to REST: {e}")
+
+        return await self.create_order_rest(
+            symbol=symbol,
+            side=side_pacifica,
+            amount=amount,
+            price=price_adjusted,
+            is_reduce_only=is_reduce_only,
+            slippage=slippage,
+        )
+
+    async def create_order_ws(self, symbol, side, amount, price=None, *, is_reduce_only=False, slippage="0.1"):
+        """Create order via WebSocket"""
+        if not self.ws_client:
+            await self._create_ws_client()
+
+        result = await self.ws_client.create_order_ws(
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            price=price,
+            reduce_only=is_reduce_only,
+            slippage_percent=str(slippage),
+        )
+
+        # Parse response
+        code = result.get("code")
+        if code == 200:
+            data = result.get("data", {})
+            return data.get("i")  # order_id
+        else:
+            raise Exception(f"WS order failed: {result}")
+
+    async def create_order_rest(self, symbol, side, amount, price=None, *, is_reduce_only=False, slippage="0.1"):
+        """Create order via REST"""
         # common payload
         signature_payload = {
                 "symbol": symbol,
-                "reduce_only": False, # make it false
+                "reduce_only": False,
                 "amount": amount,
                 "side": side,
                 "client_order_id": str(uuid.uuid4()),
         }
-        if order_type == "market":
+        if price is None:
+            # market order
             signature_payload["reduce_only"] = is_reduce_only
             signature_payload["slippage_percent"] = str(slippage)
             signature_header, req_url = _get_signature_header_and_url("create_market_order")
         else:
+            # limit order
             signature_payload["price"] = price
             signature_payload["tif"] = "GTC"
             signature_header, req_url = _get_signature_header_and_url("create_order")
-        
-        message, signature = sign_message(
+
+        _, signature = sign_message(
             signature_header, signature_payload, self.agent_keypair
         )
         request_header = {
@@ -223,7 +309,6 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
             "timestamp": signature_header["timestamp"],
             "expiry_window": signature_header["expiry_window"],
         }
-        # Send the request
         headers = {"Content-Type": "application/json"}
 
         request = {
@@ -233,7 +318,6 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
 
         s = self._session()
         async with s.post(req_url, json=request, headers=headers) as r:
-            status = r.status
             try:
                 data = await r.json()
             except aiohttp.ContentTypeError:
@@ -246,32 +330,101 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
 
     async def get_position(self, symbol):
         """
-        GET /positions
+        Get position (WS first, REST fallback)
+        """
+        symbol = symbol.upper()
+        if self.fetch_by_ws:
+            try:
+                return await self.get_position_ws(symbol)
+            except Exception as e:
+                print(f"[pacifica] get_position WS failed, falling back to REST: {e}")
+        return await self.get_position_rest(symbol)
+
+    async def get_position_ws(self, symbol: str, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
+        """Get position via WebSocket"""
+        if not self.ws_client:
+            await self._create_ws_client()
+
+        await self.ws_client.wait_positions_ready(timeout=timeout)
+        pos = self.ws_client.get_position(symbol.upper())
+        if pos is None:
+            return None
+
+        return self._parse_position_ws(pos)
+
+    def _parse_position_ws(self, pos: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Parse WS position to standard format"""
+        if not pos:
+            return None
+        amount = pos.get("amount", "0")
+        try:
+            if float(amount) == 0:
+                return None
+        except (ValueError, TypeError):
+            return None
+
+        side_raw = pos.get("side", "")
+        side = "buy" if side_raw == "bid" else "sell"
+
+        return {
+            "symbol": pos.get("symbol"),
+            "side": side,
+            "price": pos.get("entry_price"),
+            "size": amount,
+            "liquidation_price": pos.get("liquidation_price"),
+            "margin": pos.get("margin"),
+            "funding_fee": pos.get("funding_fee"),
+        }
+
+    async def get_position_rest(self, symbol):
+        """
+        GET /positions (REST)
         """
         url = f"{BASE_URL}/positions"
-        
+
         s = self._session()
         params = {"account":self.public_key}
-        
+
         async with s.get(url, params=params) as r:
             r.raise_for_status()
             data = await r.json()
-        
+
         data = data.get('data',{})
-        results = []
         for pos in data:
             if pos.get("symbol") == symbol:
                 return {
                     "symbol": symbol,
-                    "side": "buy" if pos.get("side")=="bid" else "ask",
+                    "side": "buy" if pos.get("side")=="bid" else "sell",
                     "price": pos.get("entry_price"),
                     "size":pos.get("amount"),
                 }
-    
+        return None
     
     async def get_collateral(self):
         """
-        GET /account
+        Get collateral (WS first, REST fallback)
+        """
+        if self.fetch_by_ws:
+            try:
+                return await self.get_collateral_ws()
+            except Exception as e:
+                print(f"[pacifica] get_collateral WS failed, falling back to REST: {e}")
+        return await self.get_collateral_rest()
+
+    async def get_collateral_ws(self, timeout: float = 5.0) -> Dict[str, Any]:
+        """Get collateral via WebSocket"""
+        if not self.ws_client:
+            await self._create_ws_client()
+
+        ready = await self.ws_client.wait_account_info_ready(timeout=timeout)
+        if not ready:
+            raise TimeoutError("WS account_info not ready")
+
+        return self.ws_client.get_collateral()
+
+    async def get_collateral_rest(self):
+        """
+        GET /account (REST)
         """
         url = f"{BASE_URL}/account"
         s = self._session()
@@ -279,10 +432,10 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         async with s.get(url, params=params) as r:
             r.raise_for_status()
             data = await r.json()
-        
+
         data = data.get('data',{})
 
-        try:        
+        try:
             return {
                 "total_collateral": data.get("account_equity"),
                 "available_collateral": data.get("available_to_spend"),
@@ -295,17 +448,54 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
     
     async def get_open_orders(self, symbol):
         """
-        GET /orders
+        Get open orders (WS first, REST fallback)
+        """
+        symbol = symbol.upper()
+        if self.fetch_by_ws:
+            try:
+                return await self.get_open_orders_ws(symbol)
+            except Exception as e:
+                print(f"[pacifica] get_open_orders WS failed, falling back to REST: {e}")
+        return await self.get_open_orders_rest(symbol)
+
+    async def get_open_orders_ws(self, symbol: str, timeout: float = 5.0) -> List[Dict[str, Any]]:
+        """Get open orders via WebSocket"""
+        if not self.ws_client:
+            await self._create_ws_client()
+
+        await self.ws_client.wait_orders_ready(timeout=timeout)
+        orders = self.ws_client.get_open_orders(symbol.upper())
+
+        # Parse to standard format
+        results = []
+        for order in orders:
+            side_raw = order.get("side", "")
+            side = "buy" if side_raw == "bid" else "sell"
+            results.append({
+                "id": order.get("order_id"),
+                "symbol": order.get("symbol"),
+                "side": side,
+                "price": order.get("price"),
+                "quantity": order.get("amount"),
+                "filled_quantity": order.get("filled_amount"),
+                "order_type": order.get("order_type"),
+                "reduce_only": order.get("reduce_only", False),
+            })
+        return results
+
+    async def get_open_orders_rest(self, symbol):
+        """
+        GET /orders (REST)
         """
         url = f"{BASE_URL}/orders"
-        
+
         s = self._session()
         params = {"account":self.public_key}
-        
+
         async with s.get(url, params=params) as r:
             r.raise_for_status()
             data = await r.json()
-        
+
         data = data.get('data',{})
         results = []
         for pos in data:
@@ -313,21 +503,52 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
                 results.append({
                     "id": pos.get("order_id"),
                     "symbol": symbol,
-                    "side": "buy" if pos.get("side")=="bid" else "ask",
+                    "side": "buy" if pos.get("side")=="bid" else "sell",
                     "price": pos.get("price"),
                     "quantity":pos.get("initial_amount"),
-                    "fileed_quantity":pos.get("filled_amount"),
+                    "filled_quantity":pos.get("filled_amount"),
                     "order_type":pos.get("order_type")
                 })
         return results
 
     async def cancel_orders(self, symbol, open_orders = None):
+        """
+        Cancel orders (WS or REST based on order_by_ws setting)
+        """
+        symbol = symbol.upper()
+
+        if self.order_by_ws:
+            try:
+                return await self.cancel_orders_ws(symbol, open_orders)
+            except Exception as e:
+                print(f"[pacifica] cancel_orders WS failed, falling back to REST: {e}")
+
+        return await self.cancel_orders_rest(symbol, open_orders)
+
+    async def cancel_orders_ws(self, symbol, _open_orders=None):
+        """Cancel all orders via WebSocket (uses cancel_all_orders, ignores open_orders param)"""
+        if not self.ws_client:
+            await self._create_ws_client()
+
+        # Use cancel_all_orders for efficiency
+        result = await self.ws_client.cancel_all_orders_ws(symbol=symbol)
+
+        code = result.get("code")
+        if code == 200:
+            data = result.get("data", {})
+            cancelled_count = data.get("cancelled_count", 0)
+            return [{"status": "OK", "cancelled_count": cancelled_count}]
+        else:
+            raise Exception(f"WS cancel_all failed: {result}")
+
+    async def cancel_orders_rest(self, symbol, open_orders=None):
+        """Cancel orders via REST (one by one)"""
         if open_orders is None:
             open_orders = await self.get_open_orders(symbol)
 
         if not open_orders:
             return []
-        
+
         results = []
         for order in open_orders:
             order_id = order["id"]
@@ -336,7 +557,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
                 "order_id": order_id,
             }
             signature_header, req_url = _get_signature_header_and_url("cancel_order")
-            message, signature = sign_message(
+            _, signature = sign_message(
                 signature_header, signature_payload, self.agent_keypair
             )
             request_header = {
@@ -346,7 +567,6 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
                 "timestamp": signature_header["timestamp"],
                 "expiry_window": signature_header["expiry_window"],
             }
-            # Send the request
             headers = {"Content-Type": "application/json"}
 
             request = {
@@ -356,7 +576,6 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
 
             s = self._session()
             async with s.post(req_url, json=request, headers=headers) as r:
-                status = r.status
                 try:
                     data = await r.json()
                 except aiohttp.ContentTypeError:
@@ -424,6 +643,32 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
 
     async def get_mark_price(self, symbol: str, *, force_refresh: bool = True, fallback: str = "mark") -> Optional[float]:
         """
+        Get mark price (WS first, REST fallback)
+        """
+        symbol = str(symbol).upper()
+
+        if self.fetch_by_ws:
+            try:
+                return await self.get_mark_price_ws(symbol)
+            except Exception as e:
+                print(f"[pacifica] get_mark_price WS failed, falling back to REST: {e}")
+        
+        return await self.get_mark_price_rest(symbol, force_refresh=force_refresh, fallback=fallback)
+
+    async def get_mark_price_ws(self, symbol: str, timeout: float = 5.0) -> Optional[float]:
+        """Get mark price via WebSocket"""
+        if not self.ws_client:
+            await self._create_ws_client()
+
+        ready = await self.ws_client.wait_prices_ready(timeout=timeout)
+        if not ready:
+            raise TimeoutError("WS prices not ready")
+
+        return self.ws_client.get_mark_price(symbol.upper())
+
+    async def get_mark_price_rest(self, symbol: str, *, force_refresh: bool = True, fallback: str = "mark") -> Optional[float]:
+        """
+        Get mark price via REST.
         - 기본: 원격 갱신(force_refresh=True) 후 캐시에서 반환
         - force_refresh=False이면 캐시 우선, 없으면 원격 갱신 시도
         - fallback: 캐시에 mark가 없으면 mid→oracle 순으로 대체할 때 사용하는 키 우선순위
@@ -453,6 +698,34 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         # 캐시에 없으면 한 번 더 갱신 시도
         prices = await self.refresh_prices()
         return prices.get(symbol)
+
+    # ----------------------------
+    # Orderbook
+    # ----------------------------
+    async def get_orderbook(self, symbol: str, agg_level: int = 1, timeout: float = 5.0) -> Dict[str, Any]:
+        """
+        Get orderbook via WebSocket.
+
+        Args:
+            symbol: Trading symbol
+            agg_level: Aggregation level (1, 2, 5, 10, 100, 1000)
+            timeout: Timeout for waiting data
+        """
+        if not self.ws_client:
+            await self._create_ws_client()
+
+        symbol = symbol.upper()
+        await self.ws_client.subscribe_orderbook(symbol, agg_level=agg_level)
+        ready = await self.ws_client.wait_orderbook_ready(symbol, timeout=timeout)
+        if not ready:
+            raise TimeoutError(f"WS orderbook not ready for {symbol}")
+
+        return self.ws_client.get_orderbook(symbol)
+
+    async def unsubscribe_orderbook(self, symbol: str):
+        """Unsubscribe from orderbook WebSocket channel"""
+        if self.ws_client:
+            return await self.ws_client.unsubscribe_orderbook(symbol.upper())
 
     async def close_position(self, symbol, position, *, is_reduce_only=False):
         return await super().close_position(symbol, position, is_reduce_only=is_reduce_only)
