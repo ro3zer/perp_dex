@@ -347,7 +347,34 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
         return await super().close_position(symbol, position)
     
     async def cancel_orders(self, symbol, positions=None):
-        # do not use positions, just made it for pass the func
+        if positions is not None and not isinstance(positions, list):
+            positions = [positions]
+            
+        if positions is not None:
+            # Cancel specific orders by ID
+            async with aiohttp.ClientSession() as session:
+                results = []
+                for oid in positions:
+                    timestamp = str(int(time.time() * 1000))
+                    window = "5000"
+                    instruction_type = "orderCancel"
+                    order_data = {"orderId": oid, "symbol": symbol}
+                    sorted_data = "&".join(f"{k}={v}" for k, v in sorted(order_data.items()))
+                    signing_string = f"instruction={instruction_type}&{sorted_data}&timestamp={timestamp}&window={window}"
+                    signature = self._generate_signature(signing_string)
+                    headers = {
+                        "X-API-KEY": self.API_KEY,
+                        "X-SIGNATURE": signature,
+                        "X-TIMESTAMP": timestamp,
+                        "X-WINDOW": window,
+                        "Content-Type": "application/json; charset=utf-8"
+                    }
+                    async with session.delete(f"{self.BASE_URL}/order", headers=headers, json=order_data) as response:
+                        results.append(self.parse_orders(await response.json()))
+                results = [d for sub in results for d in sub]
+                return results
+        
+        # Cancel all orders for the given symbol
         async with aiohttp.ClientSession() as session:
             timestamp = str(int(time.time() * 1000))
             window = "5000"

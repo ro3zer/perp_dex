@@ -6,8 +6,8 @@ import asyncio
 from keys.pk_backpack import BACKPACK_KEY
 # test done
 
-coin = 'SOL/USDC'
-symbol = symbol_create('backpack',coin,is_spot=True)
+coin = 'BTC'
+symbol = symbol_create('backpack',coin,is_spot=False)
 
 async def main():
     backpack = await create_exchange('backpack',BACKPACK_KEY)
@@ -16,8 +16,20 @@ async def main():
     coll = await backpack.get_collateral()
     print(coll)
 
+    ods = await backpack.get_open_orders(symbol)
+    print(ods)
+
+    oid = []
+    for od in ods:
+        oid =od.get("id") 
+
+        res = await backpack.cancel_orders(symbol, oid)
+        print(res)
+    return 
     position = await backpack.get_position(symbol)
     print(position)
+
+    
     #print(symbol)
     #available_symbols = await backpack.get_available_symbols()
     #print(available_symbols)
