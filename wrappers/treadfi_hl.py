@@ -676,6 +676,9 @@ alert('Signing/Submit failed: ' + e.message);
 				data = {"status": r.status, "text": txt}
 			return self.parse_orders(data)
 
+	async def get_orderbook(self, symbol: str, timeout: float = 5.0):
+		symbol_to_hl = self._symbol_convert_for_ws(symbol)
+		return await super().get_orderbook(symbol_to_hl, timeout=timeout)
 
 	async def get_open_orders(self, symbol):
 		"""
