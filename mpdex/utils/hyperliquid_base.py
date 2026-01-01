@@ -847,10 +847,13 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
             return str(e)
 
     async def cancel_orders(self, symbol: str, open_orders=None, *, is_spot: bool = False, prefer_ws: bool = True, timeout: float = 5.0):
+        
         if open_orders is None:
             open_orders = await self.get_open_orders(symbol)
+
         if not open_orders:
             return []
+        
         asset_cache, cancels, results = {}, [], []
         for od in open_orders:
             oid, sym = od.get("order_id"), od.get("symbol") or symbol

@@ -38,11 +38,17 @@ class MultiPerpDex(ABC):
         pass
     
     @abstractmethod
-    async def cancel_orders(self, symbol, oids = None):
+    async def cancel_orders(self, symbol, open_orders = None):
         """
         Docstring for cancel_orders
-        If oids is None, cancel all open orders for the given symbol.
-        Otherwise, cancel only the orders with the given order IDs.
+        If open_orders is None, cancel all open orders for the given symbol.
+        open_orders: List of orders to cancel. If provided, only these orders will be canceled.
+        Each open order is a dict with at least the following keys:
+            - id: Order ID
+            - symbol: Trading pair symbol
+            - side: 'buy' or 'sell'
+            - size: Order size/amount
+            - price: Order price (None for market orders)
         """
         pass
 

@@ -29,8 +29,10 @@ async def main():
     res = await grvt.get_open_orders(symbol)
     print(res)
 
-    res = await grvt.cancel_orders(symbol)
-    print(res)
+    for od in res:
+        oid = od.get("id")
+        res = await grvt.cancel_orders(symbol, oid)
+        print(res)
     return
 
 

@@ -21,10 +21,9 @@ async def main():
 
     oid = []
     for od in ods:
-        oid =od.get("id") 
-
-        res = await backpack.cancel_orders(symbol, oid)
-        print(res)
+        oid.append(od)
+    res = await backpack.cancel_orders(symbol, oid)
+    print(res)
     return 
     position = await backpack.get_position(symbol)
     print(position)

@@ -138,9 +138,16 @@ class GrvtExchange(MultiPerpDexMixin, MultiPerpDex):
         orders = await super().get_open_orders(symbol)
         return self.parse_open_orders(orders)
     
-    async def cancel_orders(self, symbol, parsed_orders = None):
-        if parsed_orders is None:
+    async def cancel_orders(self, symbol, oids = None):
+        if oids is None:
             parsed_orders = await self.get_open_orders(symbol)
+
+        if not oids:
+            return []
+
+        if not isinstance(parsed_orders, list):
+            parsed_orders = [parsed_orders]
+
         tasks = []
         for item in parsed_orders:
             order_id = item['id']
