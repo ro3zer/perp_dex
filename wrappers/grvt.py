@@ -138,18 +138,18 @@ class GrvtExchange(MultiPerpDexMixin, MultiPerpDex):
         orders = await super().get_open_orders(symbol)
         return self.parse_open_orders(orders)
     
-    async def cancel_orders(self, symbol, oids = None):
-        if oids is None:
-            parsed_orders = await self.get_open_orders(symbol)
+    async def cancel_orders(self, symbol, open_orders = None):
+        if open_orders is None:
+            open_orders = await self.get_open_orders(symbol)
 
-        if not oids:
+        if not open_orders:
             return []
 
-        if not isinstance(parsed_orders, list):
-            parsed_orders = [parsed_orders]
+        if not isinstance(open_orders, list):
+            open_orders = [open_orders]
 
         tasks = []
-        for item in parsed_orders:
+        for item in open_orders:
             order_id = item['id']
             # symbol is not required actually
             tasks.append(asyncio.create_task(self.exchange.cancel_order(id=order_id)))
