@@ -77,6 +77,7 @@ class TreadfiPcExchange(MultiPerpDexMixin, MultiPerpDex):
         self._symbol_meta: Dict[str, Dict[str, Any]] = {}
         self._symbol_list: List[str] = []
         self._initialized: bool = False
+        self._leverage_updated: Dict[str, bool] = {}  # symbol -> updated flag
 
         # Price cache (REST fallback)
         self._price_cache: Dict[str, Dict[str, Any]] = {}
@@ -147,6 +148,8 @@ class TreadfiPcExchange(MultiPerpDexMixin, MultiPerpDex):
                 "max_tick": str(it.get("max_tick") or "0"),
                 "min_order_size": str(it.get("min_order_size") or "0"),
                 "max_order_size": str(it.get("max_order_size") or "0"),
+                "max_leverage": int(it.get("max_leverage") or 1),
+                "isolated_only": bool(it.get("isolated_only", False)),
             }
             symbols.append(sym)
 
@@ -765,17 +768,27 @@ alert('Signing/Submit failed: ' + e.message);
     # TreadFi Orders
     # ----------------------------
     async def update_leverage(self, symbol: str, leverage: Optional[int] = None):
-        """Update leverage via TreadFi API"""
+        """Update leverage via TreadFi API to max_leverage"""
+        # ws 조회는 pacifica symbol, treadfi 주문은 treadfi symbol 사용
+        pac_symbol = self._symbol_to_pacifica(symbol)
+
+        # Skip if already updated
+        if self._leverage_updated.get(pac_symbol):
+            return {"status": "ok", "message": "already updated"}
+
         if not self._has_valid_cookies():
             raise RuntimeError("not logged in")
 
-        # For now, use default leverage (TreadFi specific)
-        # This might need adjustment based on actual TreadFi API for Pacifica
+        # Get max_leverage from symbol meta
+        meta = self._symbol_meta.get(pac_symbol, {})
+        max_lev = meta.get("max_leverage", 10)
+        lev = int(leverage or max_lev)
+
         payload = {
             "account_ids": [self.account_id],
             "margin_mode": "CROSS",
             "pair": symbol,
-            "leverage": leverage or 10,
+            "leverage": lev,
         }
 
         headers = {
@@ -790,7 +803,11 @@ alert('Signing/Submit failed: ' + e.message);
         async with s.post(self.url_base + "internal/sor/set_leverage", data=json.dumps(payload), headers=headers) as r:
             txt = await r.text()
             try:
-                return json.loads(txt)
+                result = json.loads(txt)
+                if r.status == 200:
+                    self._leverage_updated[pac_symbol] = True
+                result['leverage_set'] = lev
+                return result
             except Exception:
                 return {"status": r.status, "text": txt}
 

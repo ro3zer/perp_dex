@@ -188,8 +188,8 @@ class PacificaWSClient:
             self._handle_orders(data.get("data", []))
             return
 
-        # Trading responses (create_order, cancel_order, etc.)
-        if channel in ("create_order", "create_market_order", "cancel_order", "cancel_all_orders"):
+        # Trading responses (create_order, cancel_order, update_leverage, etc.)
+        if channel in ("create_order", "create_market_order", "cancel_order", "cancel_all_orders", "update_leverage"):
             self._handle_trading_response(data)
             return
 
@@ -820,6 +820,65 @@ class PacificaWSClient:
         except asyncio.TimeoutError:
             self._pending_requests.pop(req_id, None)
             raise TimeoutError(f"Cancel all request timed out: {req_id}")
+
+    async def update_leverage_ws(
+        self,
+        symbol: str,
+        leverage: int,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        """
+        Update leverage via WebSocket.
+
+        Args:
+            symbol: Trading symbol
+            leverage: New leverage value
+
+        Returns:
+            Response dict
+        """
+        if not self.public_key or not self.agent_keypair:
+            raise ValueError("Auth required for update_leverage")
+
+        req_id = str(uuid.uuid4())
+        ts = int(time.time() * 1000)
+
+        signature_header = {
+            "timestamp": ts,
+            "expiry_window": 5000,
+            "type": "update_leverage",
+        }
+        signature_payload = {
+            "symbol": symbol.upper(),
+            "leverage": leverage,
+        }
+
+        _, signature = sign_message(signature_header, signature_payload, self.agent_keypair)
+
+        request = {
+            "id": req_id,
+            "params": {
+                "update_leverage": {
+                    "account": self.public_key,
+                    "agent_wallet": self.agent_public_key,
+                    "signature": signature,
+                    "timestamp": ts,
+                    "expiry_window": 5000,
+                    **signature_payload,
+                }
+            }
+        }
+
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending_requests[req_id] = fut
+
+        try:
+            await self._send(request)
+            result = await asyncio.wait_for(fut, timeout=timeout)
+            return result
+        except asyncio.TimeoutError:
+            self._pending_requests.pop(req_id, None)
+            raise TimeoutError(f"Update leverage request timed out: {req_id}")
 
 
 # ----------------------------

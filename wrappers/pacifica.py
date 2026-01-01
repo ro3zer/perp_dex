@@ -46,10 +46,11 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         self.agent_keypair = Keypair.from_base58_string(agent_private_key)
         self._http: Optional[aiohttp.ClientSession] = None
 
-        # { "BTC": {"tick_size": "1", "lot_size": "0.00001", ...}, ... }
+        # { "BTC": {"tick_size": "1", "lot_size": "0.00001", "max_leverage": 50, ...}, ... }
         self._symbol_meta: Dict[str, Dict[str, Any]] = {}
         self._symbol_list: List[str] = []
         self._initialized: bool = False
+        self._leverage_updated: Dict[str, bool] = {}  # symbol -> updated flag
 
         # 가격 런타임 캐시: { "BTC": {"mark": Decimal, "mid": Decimal|None, "oracle": Decimal|None, "ts": int} }
         self._price_cache: Dict[str, Dict[str, Any]] = {}
@@ -108,6 +109,8 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
                 "max_tick": str(it.get("max_tick") or "0"),
                 "min_order_size": str(it.get("min_order_size") or "0"),
                 "max_order_size": str(it.get("max_order_size") or "0"),
+                "max_leverage": int(it.get("max_leverage") or 1),
+                "isolated_only": bool(it.get("isolated_only", False)),
             }
             symbols.append(sym)
 
@@ -218,11 +221,73 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         adjusted = (units * step).quantize(step)
         return self._format_with_step(adjusted, step)
 
+    # ---------------------------
+    # Leverage
+    # ---------------------------
+    async def update_leverage(self, symbol: str, leverage: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Update leverage for symbol (REST-only, WS not supported by Pacifica).
+        If leverage is None, uses max_leverage from symbol meta.
+        """
+        symbol = symbol.upper()
+        if self._leverage_updated.get(symbol):
+            return {"status": "ok", "message": "already updated"}
+
+        meta = self._get_meta(symbol)
+        max_lev = meta.get("max_leverage", 1)
+        lev = int(leverage or max_lev)
+
+        # update_leverage is REST-only (not supported via WS)
+        result = await self.update_leverage_rest(symbol, lev)
+        if result.get("success"):
+            self._leverage_updated[symbol] = True
+            return {"status": "ok", "leverage": lev}
+        return {"status": "error", "result": result}
+
+    async def update_leverage_rest(self, symbol: str, leverage: int) -> Dict[str, Any]:
+        """Update leverage via REST API"""
+        import time
+        timestamp = int(time.time() * 1000)
+        expiry_window = 5000
+
+        signature_payload = {
+            "symbol": symbol,
+            "leverage": leverage,
+        }
+        signature_header = {
+            "type": "update_leverage",
+            "timestamp": timestamp,
+            "expiry_window": expiry_window,
+        }
+        _, signature = sign_message(signature_header, signature_payload, self.agent_keypair)
+
+        payload = {
+            "account": self.public_key,
+            "agent_wallet": self.agent_public_key,
+            "signature": signature,
+            "timestamp": timestamp,
+            "expiry_window": 5000,
+            "symbol": symbol,
+            "leverage": leverage,
+        }
+
+        url = f"{BASE_URL}/account/leverage"
+        s = self._session()
+        async with s.post(url, json=payload, headers={"Content-Type": "application/json"}) as r:
+            return await r.json()
+
     async def create_order(self, symbol, side, amount, price=None, order_type='market', *, is_reduce_only=False, slippage = "0.1"):
         """
         Create order (WS or REST based on order_by_ws setting)
         """
         symbol = symbol.upper()
+
+        # Update leverage to max before order
+        try:
+            await self.update_leverage(symbol)
+        except Exception as e:
+            print(f"[pacifica] update_leverage failed (continuing): {e}")
+
         amount = self._adjust_amount_lot(symbol, amount, rounding=ROUND_DOWN)
         side_pacifica = "bid" if side.lower() == "buy" else "ask"
 

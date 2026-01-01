@@ -21,6 +21,10 @@ async def main():
     print(f"Available symbols: {ex.available_symbols.get('perp', [])[:5]}...")
     print()
 
+    res = await ex.update_leverage(symbol)
+    print(f"Leverage update result: {res}")
+    return
+
     # Get collateral (via Pacifica WS/REST)
     coll = await ex.get_collateral()
     print(f"Collateral: {coll}")
