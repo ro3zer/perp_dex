@@ -35,7 +35,8 @@ async def main():
     #await asyncio.sleep(0.1)
     while True:
         res = await lighter.get_orderbook(symbol)
-        print(len(res.get('bids', [])), len(res.get('asks', [])))
+        #print(len(res.get('bids', [])), len(res.get('asks', [])))
+        print(res.get('bids', [])[:3], res.get('asks', [])[:3])
         await asyncio.sleep(0.1)
 
     while False:

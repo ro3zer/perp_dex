@@ -29,11 +29,12 @@ logger = logging.getLogger(__name__)
 # 상수
 WS_URL_MAINNET = "wss://mainnet.zklighter.elliot.ai/stream"
 WS_URL_TESTNET = "wss://testnet.zklighter.elliot.ai/stream"
-WS_CONNECT_TIMEOUT = 15
-WS_READ_TIMEOUT = 60
+WS_CONNECT_TIMEOUT = 10
+WS_READ_TIMEOUT = 30
 PING_INTERVAL = 30
-RECONNECT_MIN = 1.0
-RECONNECT_MAX = 16.0
+RECONNECT_MIN = 0.5
+RECONNECT_MAX = 8.0
+FORCE_RECONNECT_INTERVAL = 60  # 강제 재연결 주기 (초)
 
 
 def _json_dumps(obj: Any) -> str:
@@ -87,6 +88,9 @@ class LighterWSClient:
         self._orderbook_nonces: Dict[int, int] = {}  # market_id -> last nonce
         self._orderbook_subs: set[int] = set()  # subscribed market_ids
         self._orderbook_events: Dict[int, asyncio.Event] = {}
+        # 내부 dict (string key로 delta 적용, float 정밀도 문제 방지)
+        self._orderbook_asks_dict: Dict[int, Dict[str, float]] = {}
+        self._orderbook_bids_dict: Dict[int, Dict[str, float]] = {}
 
         # ========== 이벤트 (첫 데이터 수신 대기용) ==========
         self._market_stats_ready = asyncio.Event()
@@ -108,25 +112,37 @@ class LighterWSClient:
 
         for attempt in range(1, max_attempts + 1):
             try:
-                self.conn = await websockets.connect(
-                    self.ws_url,
-                    ping_interval=None,  # 수동 ping 사용
-                    open_timeout=WS_CONNECT_TIMEOUT,
+                print(f"[LighterWS] connect attempt {attempt}/{max_attempts}...")
+                self.conn = await asyncio.wait_for(
+                    websockets.connect(
+                        self.ws_url,
+                        ping_interval=None,
+                        ping_timeout=None,
+                        close_timeout=5,
+                    ),
+                    timeout=WS_CONNECT_TIMEOUT,
                 )
+                print(f"[LighterWS] websocket connected, starting tasks...")
                 # 백그라운드 태스크 시작
-                self._tasks.append(asyncio.create_task(self._ping_loop(), name="ping"))
                 self._tasks.append(asyncio.create_task(self._listen_loop(), name="listen"))
-                logger.info(f"[LighterWS] Connected to {self.ws_url}")
+                self._tasks.append(asyncio.create_task(self._force_reconnect_loop(), name="force_reconnect"))
+                print(f"[LighterWS] connect() done")
                 return
+            except asyncio.TimeoutError:
+                print(f"[LighterWS] connect timeout after {WS_CONNECT_TIMEOUT}s, retrying...")
+                continue
             except InvalidStatusCode as e:
                 status = getattr(e, "status_code", None) or getattr(e, "code", None)
+                print(f"[LighterWS] connect got status {status}")
                 if status != 429:
                     raise
                 # 429 → 백오프
                 backoff = min(cap, base * (2 ** (attempt - 1)))
                 jitter = random.uniform(0, backoff * 0.2)
+                print(f"[LighterWS] 429 rate limit, waiting {backoff + jitter:.1f}s...")
                 await asyncio.sleep(backoff + jitter)
-            except Exception:
+            except Exception as e:
+                print(f"[LighterWS] connect exception: {type(e).__name__}: {e}")
                 raise
 
         raise RuntimeError("WS connect failed after retries")
@@ -174,7 +190,7 @@ class LighterWSClient:
                 return
             # conn이 None이거나 닫혀있으면 스킵 (재연결 후 _resubscribe에서 재구독됨)
             if not self.conn or not self.conn.open:
-                logger.warning(f"[LighterWS] _send_subscribe skipped (conn not ready): {channel}")
+                print(f"[LighterWS] _send_subscribe SKIPPED (conn not ready): {channel}")
                 return
             msg = {"type": "subscribe", "channel": channel}
             # auth 필요한 채널이면 추가
@@ -188,8 +204,24 @@ class LighterWSClient:
         """재연결 시 구독 복원"""
         old_subs = list(self._active_subs)
         self._active_subs.clear()
+
+        print(f"[LighterWS] _resubscribe: old_subs={old_subs}")
+        print(f"[LighterWS] _resubscribe: _orderbook_subs={self._orderbook_subs}")
+
+        # Orderbook 캐시 초기화 (재구독 시 새 스냅샷 받아야 함)
+        for mid in list(self._orderbook_subs):
+            self._orderbooks.pop(mid, None)
+            self._orderbook_nonces.pop(mid, None)
+            self._orderbook_asks_dict.pop(mid, None)
+            self._orderbook_bids_dict.pop(mid, None)
+            if mid in self._orderbook_events:
+                self._orderbook_events[mid].clear()
+
         for ch in old_subs:
+            print(f"[LighterWS] _resubscribe: subscribing {ch}")
             await self._send_subscribe(ch)
+
+        print(f"[LighterWS] _resubscribe: done, _active_subs={self._active_subs}")
 
     # ==================== Orderbook 구독 ====================
 
@@ -240,6 +272,8 @@ class LighterWSClient:
         # 캐시 정리
         self._orderbooks.pop(mid, None)
         self._orderbook_nonces.pop(mid, None)
+        self._orderbook_asks_dict.pop(mid, None)
+        self._orderbook_bids_dict.pop(mid, None)
         if mid in self._orderbook_events:
             self._orderbook_events[mid].clear()
 
@@ -249,7 +283,7 @@ class LighterWSClient:
     # ==================== 내부 루프 ====================
 
     async def _ping_loop(self) -> None:
-        """주기적 ping (Lighter는 JSON ping 지원)"""
+        """주기적 ping (Lighter는 JSON ping 지원) - 현재 미사용"""
         try:
             while not self._stop.is_set():
                 await asyncio.sleep(PING_INTERVAL)
@@ -260,6 +294,72 @@ class LighterWSClient:
                         logger.warning(f"[LighterWS] Ping error: {e}")
         except asyncio.CancelledError:
             pass
+
+    async def _force_reconnect_loop(self) -> None:
+        """주기적 강제 재연결 (Lighter WS 특성상 필요)"""
+        try:
+            while not self._stop.is_set():
+                await asyncio.sleep(FORCE_RECONNECT_INTERVAL)
+                if self._stop.is_set():
+                    break
+                print(f"[LighterWS] Force reconnect triggered ({FORCE_RECONNECT_INTERVAL}s interval)")
+                await self._force_reconnect()
+        except asyncio.CancelledError:
+            pass
+
+    async def _force_reconnect(self) -> None:
+        """강제 재연결 수행"""
+        # 1. 기존 연결 정리
+        if self.conn:
+            try:
+                await self.conn.close()
+            except Exception:
+                pass
+        self.conn = None
+
+        # 2. Orderbook 캐시 초기화
+        for mid in list(self._orderbook_subs):
+            self._orderbooks.pop(mid, None)
+            self._orderbook_nonces.pop(mid, None)
+            self._orderbook_asks_dict.pop(mid, None)
+            self._orderbook_bids_dict.pop(mid, None)
+            if mid in self._orderbook_events:
+                self._orderbook_events[mid].clear()
+
+        # 3. 기존 태스크 정리 (자기 자신 제외)
+        current_task = asyncio.current_task()
+        for t in self._tasks:
+            if t != current_task and not t.done():
+                t.cancel()
+
+        # 4. 새 연결
+        old_subs = list(self._active_subs)
+        self._active_subs.clear()
+        self._tasks = [current_task] if current_task else []
+
+        try:
+            self.conn = await asyncio.wait_for(
+                websockets.connect(
+                    self.ws_url,
+                    ping_interval=None,
+                    ping_timeout=None,
+                    close_timeout=5,
+                ),
+                timeout=WS_CONNECT_TIMEOUT,
+            )
+            print(f"[LighterWS] Force reconnect: connected")
+
+            # 새 listen_loop 시작
+            self._tasks.append(asyncio.create_task(self._listen_loop(), name="listen"))
+
+            # 재구독
+            for ch in old_subs:
+                print(f"[LighterWS] Force reconnect: resubscribing {ch}")
+                await self._send_subscribe(ch)
+
+            print(f"[LighterWS] Force reconnect: done")
+        except Exception as e:
+            print(f"[LighterWS] Force reconnect failed: {e}")
 
     async def _listen_loop(self) -> None:
         """메시지 수신 루프"""
@@ -500,26 +600,29 @@ class LighterWSClient:
 
         if is_first:
             # 스냅샷: 전체 교체
-            asks = []
-            bids = []
+            # String key로 저장 (float 정밀도 문제 방지)
+            asks_dict: Dict[str, float] = {}
+            bids_dict: Dict[str, float] = {}
             for item in asks_update:
                 try:
-                    px = float(item.get("price", 0))
+                    px_str = str(item.get("price", "0"))
                     sz = float(item.get("size", 0))
                     if sz > 0:
-                        asks.append([px, sz])
+                        asks_dict[px_str] = sz
                 except (ValueError, TypeError):
                     continue
             for item in bids_update:
                 try:
-                    px = float(item.get("price", 0))
+                    px_str = str(item.get("price", "0"))
                     sz = float(item.get("size", 0))
                     if sz > 0:
-                        bids.append([px, sz])
+                        bids_dict[px_str] = sz
                 except (ValueError, TypeError):
                     continue
 
-            # 정렬: asks 오름차순, bids 내림차순
+            # dict -> list, 정렬
+            asks = [[float(px), sz] for px, sz in asks_dict.items()]
+            bids = [[float(px), sz] for px, sz in bids_dict.items()]
             asks.sort(key=lambda x: x[0])
             bids.sort(key=lambda x: x[0], reverse=True)
 
@@ -528,6 +631,9 @@ class LighterWSClient:
                 "bids": bids,
                 "time": int(time.time() * 1000),
             }
+            # 내부 dict도 저장 (delta 적용용)
+            self._orderbook_asks_dict[mid] = asks_dict
+            self._orderbook_bids_dict[mid] = bids_dict
         else:
             # Delta 업데이트
             # nonce 연속성 체크
@@ -536,41 +642,50 @@ class LighterWSClient:
                 if begin_nonce != last_nonce:
                     logger.warning(
                         f"[LighterWS] Orderbook nonce discontinuity for market {mid}: "
-                        f"expected begin_nonce={last_nonce}, got {begin_nonce}"
+                        f"expected begin_nonce={last_nonce}, got {begin_nonce}. Resetting cache."
                     )
+                    # 캐시 초기화 → 다음 메시지를 스냅샷으로 처리
+                    self._orderbooks.pop(mid, None)
+                    self._orderbook_nonces.pop(mid, None)
+                    self._orderbook_asks_dict.pop(mid, None)
+                    self._orderbook_bids_dict.pop(mid, None)
+                    return  # 이 메시지는 버리고, 다음 스냅샷 대기
 
-            # 현재 orderbook 가져오기
-            current = self._orderbooks[mid]
-            asks_dict = {lvl[0]: lvl[1] for lvl in current["asks"]}
-            bids_dict = {lvl[0]: lvl[1] for lvl in current["bids"]}
+            # 현재 dict 가져오기 (string key)
+            asks_dict = self._orderbook_asks_dict.get(mid, {})
+            bids_dict = self._orderbook_bids_dict.get(mid, {})
 
             # asks 업데이트 적용
             for item in asks_update:
                 try:
-                    px = float(item.get("price", 0))
+                    px_str = str(item.get("price", "0"))
                     sz = float(item.get("size", 0))
                     if sz <= 0:
-                        asks_dict.pop(px, None)  # 삭제
+                        asks_dict.pop(px_str, None)  # 삭제
                     else:
-                        asks_dict[px] = sz  # 추가/업데이트
+                        asks_dict[px_str] = sz  # 추가/업데이트
                 except (ValueError, TypeError):
                     continue
 
             # bids 업데이트 적용
             for item in bids_update:
                 try:
-                    px = float(item.get("price", 0))
+                    px_str = str(item.get("price", "0"))
                     sz = float(item.get("size", 0))
                     if sz <= 0:
-                        bids_dict.pop(px, None)  # 삭제
+                        bids_dict.pop(px_str, None)  # 삭제
                     else:
-                        bids_dict[px] = sz  # 추가/업데이트
+                        bids_dict[px_str] = sz  # 추가/업데이트
                 except (ValueError, TypeError):
                     continue
 
-            # dict -> list로 변환 후 정렬, 50개만 유지
-            asks = [[px, sz] for px, sz in asks_dict.items()]
-            bids = [[px, sz] for px, sz in bids_dict.items()]
+            # 내부 dict 저장
+            self._orderbook_asks_dict[mid] = asks_dict
+            self._orderbook_bids_dict[mid] = bids_dict
+
+            # dict -> list 변환 후 정렬
+            asks = [[float(px), sz] for px, sz in asks_dict.items()]
+            bids = [[float(px), sz] for px, sz in bids_dict.items()]
             asks.sort(key=lambda x: x[0])
             bids.sort(key=lambda x: x[0], reverse=True)
 
@@ -596,11 +711,22 @@ class LighterWSClient:
             except Exception:
                 pass
         self.conn = None
+
+        # 즉시 orderbook 캐시 삭제 (테스트 코드가 옛날 데이터 읽는 것 방지)
+        for mid in list(self._orderbook_subs):
+            self._orderbooks.pop(mid, None)
+            self._orderbook_nonces.pop(mid, None)
+            self._orderbook_asks_dict.pop(mid, None)
+            self._orderbook_bids_dict.pop(mid, None)
+            if mid in self._orderbook_events:
+                self._orderbook_events[mid].clear()
+
         await self._reconnect_with_backoff()
 
     async def _reconnect_with_backoff(self) -> None:
         """지수 백오프로 재연결"""
         delay = RECONNECT_MIN
+        print(f"[LighterWS] _reconnect_with_backoff started")
         while not self._stop.is_set():
             try:
                 await asyncio.sleep(delay)
@@ -610,12 +736,14 @@ class LighterWSClient:
                         t.cancel()
                 self._tasks.clear()
 
+                print(f"[LighterWS] attempting connect...")
                 await self.connect()
+                print(f"[LighterWS] connect done, calling _resubscribe...")
                 await self._resubscribe()
-                logger.info("[LighterWS] Reconnected")
+                print(f"[LighterWS] Reconnected successfully")
                 return
             except Exception as e:
-                logger.warning(f"[LighterWS] Reconnect failed: {e}")
+                print(f"[LighterWS] Reconnect failed: {e}")
                 delay = min(RECONNECT_MAX, delay * 2.0) + random.uniform(0, 0.5)
 
     # ==================== 외부 인터페이스 ====================
