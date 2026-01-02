@@ -123,6 +123,7 @@ class HLWSClientRaw:
 
         self.conn: Optional[websockets.WebSocketClientProtocol] = None
         self._stop = asyncio.Event()
+        self._ready = asyncio.Event()  # 연결 완료 시그널 (Pool에서 race condition 방지용)
         self._tasks: List[asyncio.Task] = []
 
         # --------- 멀티-유저 캐시(주소 소문자 키) ---------
@@ -216,9 +217,7 @@ class HLWSClientRaw:
         u = address.lower().strip()
         if not u or u in self._user_subs:
             return
-        await self._send_subscribe({"type": "allDexsClearinghouseState", "user": u})
-        await self._send_subscribe({"type": "spotState", "user": u})
-        await self._send_subscribe({"type": "openOrders", "user": u, "dex": "ALL_DEXS"})
+        # race condition 방지: await 전에 먼저 set에 추가하여 다른 코루틴 중복 진입 방지
         self._user_subs.add(u)
         self._open_orders_ready_by_user.setdefault(u, asyncio.Event())
         self._user_margin_by_dex.setdefault(u, {})
@@ -226,6 +225,10 @@ class HLWSClientRaw:
         self._user_positions_by_dex_raw.setdefault(u, {})
         self._user_balances.setdefault(u, {})
         self._user_open_orders.setdefault(u, [])
+        # 구독 메시지 전송
+        await self._send_subscribe({"type": "allDexsClearinghouseState", "user": u})
+        await self._send_subscribe({"type": "spotState", "user": u})
+        await self._send_subscribe({"type": "openOrders", "user": u, "dex": "ALL_DEXS"})
 
     # ---------------- per-user getter ----------------
     def get_balances_by_user(self, address: str) -> Dict[str, float]:
@@ -1247,8 +1250,12 @@ class HLWSClientPool:
         if new_socket:
             async with self._connect_sema:
                 await sock.ensure_connected_and_subscribed()
+                sock._ready.set()  # 연결 완료 시그널
                 # 소량의 간격(버스트 완화)
                 await asyncio.sleep(0.2)
+        else:
+            # 기존 소켓: 연결 완료 대기 (다른 코루틴이 연결 중일 수 있음)
+            await asyncio.wait_for(sock._ready.wait(), timeout=30.0)
 
         # 가격 구독/유저 구독
         await sock.ensure_allmids_for(dex)
