@@ -87,7 +87,7 @@ class StandXWSClient:
         """Send periodic JSON ping to keep connection alive"""
         while self._running:
             try:
-                await asyncio.sleep(15)
+                await asyncio.sleep(5)
                 if self._ws and self._running:
                     await self._ws.send('{"ping":{}}')
             except asyncio.CancelledError:
