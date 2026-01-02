@@ -971,7 +971,7 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
         # 구독 확인 및 시작
         coin = self.ws_client._resolve_coin_for_orderbook(symbol)
         #print(coin)
-        if coin not in self.ws_client._orderbook_subs:
+        if self.ws_client._orderbook_sub_counts.get(coin, 0) <= 0:
             await self.ws_client.subscribe_orderbook(symbol)
 
         # 첫 스냅샷 대기
