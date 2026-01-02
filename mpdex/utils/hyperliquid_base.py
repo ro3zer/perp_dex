@@ -752,7 +752,8 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
                         raise RuntimeError(str(resp.get("payload")))
                     return resp.get("payload", {})
             except Exception as e:
-                print(f"falling back to rest api for payload {payload}")
+                print(f"falling back to rest api for payload {e}")
+                await asyncio.sleep(0.15)  # 잠시 대기
                 pass
         s = self._session()
         async with s.post(f"{self.http_base}/exchange", json=payload, headers={"Content-Type": "application/json"}) as r:
