@@ -88,12 +88,14 @@ class StandXWSClient:
                 await self._recv_task
             except asyncio.CancelledError:
                 pass
-        if self._ws:
+        # 죽은 소켓 hang 방지를 위해 timeout 적용
+        old_ws = self._ws
+        self._ws = None
+        if old_ws:
             try:
-                await self._ws.close()
+                await asyncio.wait_for(old_ws.close(), timeout=2.0)
             except Exception:
                 pass
-        self._ws = None
         self._authenticated = False
 
     async def _recv_loop(self):

@@ -916,12 +916,15 @@ class HLWSClientRaw:
         await self._reconnect_with_backoff()
 
     async def _safe_close_only(self) -> None:
-        if self.conn:
+        # 먼저 conn을 None으로 설정 (다른 코드가 죽은 소켓 사용 방지)
+        old_conn = self.conn
+        self.conn = None
+        if old_conn:
             try:
-                await self.conn.close()
+                # 죽은 소켓에서 hang 방지를 위해 timeout 적용
+                await asyncio.wait_for(old_conn.close(), timeout=2.0)
             except Exception:
                 pass
-        self.conn = None
 
     async def _reconnect_with_backoff(self) -> None:
         delay = RECONNECT_MIN

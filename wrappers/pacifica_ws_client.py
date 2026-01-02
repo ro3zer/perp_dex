@@ -13,6 +13,7 @@ Heartbeat: ping every 50s (timeout at 60s)
 """
 import asyncio
 import json
+import random
 import time
 import uuid
 from typing import Optional, Dict, Any, Set, List
@@ -27,6 +28,8 @@ from solders.keypair import Keypair
 
 PACIFICA_WS_URL = "wss://ws.pacifica.fi/ws"
 PING_INTERVAL = 50  # seconds (server timeout at 60s)
+RECONNECT_MIN = 1.0
+RECONNECT_MAX = 8.0
 
 
 @dataclass
@@ -109,12 +112,14 @@ class PacificaWSClient:
                 await self._recv_task
             except asyncio.CancelledError:
                 pass
-        if self._ws:
+        # 죽은 소켓 hang 방지를 위해 timeout 적용
+        old_ws = self._ws
+        self._ws = None
+        if old_ws:
             try:
-                await self._ws.close()
+                await asyncio.wait_for(old_ws.close(), timeout=2.0)
             except Exception:
                 pass
-        self._ws = None
         # Reset subscription states
         self._prices_subscribed = False
         self._orderbook_subs.clear()
@@ -143,13 +148,15 @@ class PacificaWSClient:
                 data = json.loads(msg)
                 await self._handle_message(data)
             except websockets.ConnectionClosed:
-                print("[pacifica_ws] connection closed")
+                print("[pacifica_ws] Connection closed, reconnecting...")
+                await self._handle_disconnect()
                 break
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"[pacifica_ws] recv error: {e}")
-                await asyncio.sleep(0.1)
+                await self._handle_disconnect()
+                break
 
     async def _handle_message(self, data: Dict[str, Any]):
         """Handle incoming WebSocket message"""
@@ -356,6 +363,79 @@ class PacificaWSClient:
             await self.connect()
         if self._ws:
             await self._ws.send(json.dumps(msg))
+
+    async def _handle_disconnect(self) -> None:
+        """Handle disconnect and reconnect"""
+        # 먼저 ws를 None으로 설정 (죽은 소켓 사용 방지)
+        old_ws = self._ws
+        self._ws = None
+        if old_ws:
+            try:
+                await asyncio.wait_for(old_ws.close(), timeout=2.0)
+            except Exception:
+                pass
+        await self._reconnect_with_backoff()
+
+    async def _reconnect_with_backoff(self) -> None:
+        """Reconnect with exponential backoff"""
+        delay = RECONNECT_MIN
+        while self._running:
+            try:
+                await asyncio.sleep(delay)
+
+                # 기존 태스크 정리
+                if self._ping_task and not self._ping_task.done():
+                    self._ping_task.cancel()
+                if self._recv_task and not self._recv_task.done():
+                    self._recv_task.cancel()
+
+                # 새 연결
+                self._ws = await websockets.connect(
+                    self.ws_url,
+                    ping_interval=None,
+                    ping_timeout=None,
+                    close_timeout=5,
+                )
+                self._recv_task = asyncio.create_task(self._recv_loop())
+                self._ping_task = asyncio.create_task(self._ping_loop())
+
+                # 재구독
+                await self._resubscribe()
+                print("[pacifica_ws] Reconnected")
+                return
+            except Exception as e:
+                print(f"[pacifica_ws] Reconnect failed: {e}")
+                delay = min(RECONNECT_MAX, delay * 2.0) + random.uniform(0, 0.5)
+
+    async def _resubscribe(self) -> None:
+        """Resubscribe to all channels after reconnect"""
+        # 구독 상태 플래그 초기화 (재구독 허용)
+        was_prices = self._prices_subscribed
+        was_orderbook_subs = set(self._orderbook_subs)
+        was_account_info = self._account_info_subscribed
+        was_account_positions = self._account_positions_subscribed
+        was_account_orders = self._account_orders_subscribed
+
+        self._prices_subscribed = False
+        self._orderbook_subs.clear()
+        self._account_info_subscribed = False
+        self._account_positions_subscribed = False
+        self._account_orders_subscribed = False
+
+        # Public channels
+        if was_prices:
+            await self.subscribe_prices()
+        for symbol in was_orderbook_subs:
+            await self.subscribe_orderbook(symbol)
+
+        # Private channels
+        if self.public_key:
+            if was_account_info:
+                await self.subscribe_account_info(self.public_key)
+            if was_account_positions:
+                await self.subscribe_account_positions(self.public_key)
+            if was_account_orders:
+                await self.subscribe_account_orders(self.public_key)
 
     # ----------------------------
     # Public Subscriptions

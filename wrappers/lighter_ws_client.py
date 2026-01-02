@@ -64,6 +64,8 @@ class LighterWSClient:
         self._tasks: List[asyncio.Task] = []
         self._active_subs: set[str] = set()
         self._send_lock = asyncio.Lock()
+        self._reconnect_lock = asyncio.Lock()
+        self._reconnecting = False
 
         # ========== 캐시 데이터 ==========
         # 마켓 가격 (market_id -> {mark_price, index_price, last_trade_price, ...})
@@ -112,7 +114,6 @@ class LighterWSClient:
 
         for attempt in range(1, max_attempts + 1):
             try:
-                print(f"[LighterWS] connect attempt {attempt}/{max_attempts}...")
                 self.conn = await asyncio.wait_for(
                     websockets.connect(
                         self.ws_url,
@@ -122,27 +123,24 @@ class LighterWSClient:
                     ),
                     timeout=WS_CONNECT_TIMEOUT,
                 )
-                print(f"[LighterWS] websocket connected, starting tasks...")
+                print(f"[LighterWS] Connected")
                 # 백그라운드 태스크 시작
                 self._tasks.append(asyncio.create_task(self._listen_loop(), name="listen"))
                 self._tasks.append(asyncio.create_task(self._force_reconnect_loop(), name="force_reconnect"))
-                print(f"[LighterWS] connect() done")
                 return
             except asyncio.TimeoutError:
-                print(f"[LighterWS] connect timeout after {WS_CONNECT_TIMEOUT}s, retrying...")
                 continue
             except InvalidStatusCode as e:
                 status = getattr(e, "status_code", None) or getattr(e, "code", None)
-                print(f"[LighterWS] connect got status {status}")
                 if status != 429:
                     raise
                 # 429 → 백오프
                 backoff = min(cap, base * (2 ** (attempt - 1)))
                 jitter = random.uniform(0, backoff * 0.2)
-                print(f"[LighterWS] 429 rate limit, waiting {backoff + jitter:.1f}s...")
+                print(f"[LighterWS] 429 rate limit, waiting {backoff + jitter:.1f}s")
                 await asyncio.sleep(backoff + jitter)
             except Exception as e:
-                print(f"[LighterWS] connect exception: {type(e).__name__}: {e}")
+                print(f"[LighterWS] Connect error: {type(e).__name__}: {e}")
                 raise
 
         raise RuntimeError("WS connect failed after retries")
@@ -190,7 +188,6 @@ class LighterWSClient:
                 return
             # conn이 None이거나 닫혀있으면 스킵 (재연결 후 _resubscribe에서 재구독됨)
             if not self.conn or not self.conn.open:
-                print(f"[LighterWS] _send_subscribe SKIPPED (conn not ready): {channel}")
                 return
             msg = {"type": "subscribe", "channel": channel}
             # auth 필요한 채널이면 추가
@@ -205,9 +202,6 @@ class LighterWSClient:
         old_subs = list(self._active_subs)
         self._active_subs.clear()
 
-        print(f"[LighterWS] _resubscribe: old_subs={old_subs}")
-        print(f"[LighterWS] _resubscribe: _orderbook_subs={self._orderbook_subs}")
-
         # Orderbook 캐시 초기화 (재구독 시 새 스냅샷 받아야 함)
         for mid in list(self._orderbook_subs):
             self._orderbooks.pop(mid, None)
@@ -218,10 +212,7 @@ class LighterWSClient:
                 self._orderbook_events[mid].clear()
 
         for ch in old_subs:
-            print(f"[LighterWS] _resubscribe: subscribing {ch}")
             await self._send_subscribe(ch)
-
-        print(f"[LighterWS] _resubscribe: done, _active_subs={self._active_subs}")
 
     # ==================== Orderbook 구독 ====================
 
@@ -302,64 +293,71 @@ class LighterWSClient:
                 await asyncio.sleep(FORCE_RECONNECT_INTERVAL)
                 if self._stop.is_set():
                     break
-                print(f"[LighterWS] Force reconnect triggered ({FORCE_RECONNECT_INTERVAL}s interval)")
                 await self._force_reconnect()
         except asyncio.CancelledError:
             pass
 
     async def _force_reconnect(self) -> None:
         """강제 재연결 수행"""
-        # 1. 기존 연결 정리
-        if self.conn:
+        if self._reconnecting:
+            return
+
+        async with self._reconnect_lock:
+            if self._reconnecting:
+                return
+            self._reconnecting = True
+
             try:
-                await self.conn.close()
-            except Exception:
-                pass
-        self.conn = None
+                # 1. 기존 연결 정리 (죽은 소켓 hang 방지를 위해 timeout 적용)
+                old_conn = self.conn
+                self.conn = None
+                if old_conn:
+                    try:
+                        await asyncio.wait_for(old_conn.close(), timeout=2.0)
+                    except Exception:
+                        pass
 
-        # 2. Orderbook 캐시 초기화
-        for mid in list(self._orderbook_subs):
-            self._orderbooks.pop(mid, None)
-            self._orderbook_nonces.pop(mid, None)
-            self._orderbook_asks_dict.pop(mid, None)
-            self._orderbook_bids_dict.pop(mid, None)
-            if mid in self._orderbook_events:
-                self._orderbook_events[mid].clear()
+                # 2. Orderbook 캐시 초기화
+                for mid in list(self._orderbook_subs):
+                    self._orderbooks.pop(mid, None)
+                    self._orderbook_nonces.pop(mid, None)
+                    self._orderbook_asks_dict.pop(mid, None)
+                    self._orderbook_bids_dict.pop(mid, None)
+                    if mid in self._orderbook_events:
+                        self._orderbook_events[mid].clear()
 
-        # 3. 기존 태스크 정리 (자기 자신 제외)
-        current_task = asyncio.current_task()
-        for t in self._tasks:
-            if t != current_task and not t.done():
-                t.cancel()
+                # 3. 기존 태스크 정리 (자기 자신 제외)
+                current_task = asyncio.current_task()
+                for t in self._tasks:
+                    if t != current_task and not t.done():
+                        t.cancel()
 
-        # 4. 새 연결
-        old_subs = list(self._active_subs)
-        self._active_subs.clear()
-        self._tasks = [current_task] if current_task else []
+                # 4. 새 연결
+                old_subs = list(self._active_subs)
+                self._active_subs.clear()
+                self._tasks = [current_task] if current_task else []
 
-        try:
-            self.conn = await asyncio.wait_for(
-                websockets.connect(
-                    self.ws_url,
-                    ping_interval=None,
-                    ping_timeout=None,
-                    close_timeout=5,
-                ),
-                timeout=WS_CONNECT_TIMEOUT,
-            )
-            print(f"[LighterWS] Force reconnect: connected")
+                self.conn = await asyncio.wait_for(
+                    websockets.connect(
+                        self.ws_url,
+                        ping_interval=None,
+                        ping_timeout=None,
+                        close_timeout=5,
+                    ),
+                    timeout=WS_CONNECT_TIMEOUT,
+                )
+                print(f"[LighterWS] Reconnected (periodic)")
 
-            # 새 listen_loop 시작
-            self._tasks.append(asyncio.create_task(self._listen_loop(), name="listen"))
+                # 새 listen_loop 시작
+                self._tasks.append(asyncio.create_task(self._listen_loop(), name="listen"))
 
-            # 재구독
-            for ch in old_subs:
-                print(f"[LighterWS] Force reconnect: resubscribing {ch}")
-                await self._send_subscribe(ch)
-
-            print(f"[LighterWS] Force reconnect: done")
-        except Exception as e:
-            print(f"[LighterWS] Force reconnect failed: {e}")
+                # 재구독
+                for ch in old_subs:
+                    await self._send_subscribe(ch)
+            except Exception as e:
+                print(f"[LighterWS] Reconnect failed: {e}")
+            finally:
+                self._reconnecting = False
 
     async def _listen_loop(self) -> None:
         """메시지 수신 루프"""
@@ -705,42 +703,54 @@ class LighterWSClient:
 
     async def _handle_disconnect(self) -> None:
         """연결 끊김 처리 → 재연결"""
-        if self.conn:
+        if self._reconnecting:
+            return
+
+        async with self._reconnect_lock:
+            if self._reconnecting:
+                return
+            self._reconnecting = True
+
             try:
-                await self.conn.close()
-            except Exception:
-                pass
-        self.conn = None
+                # 먼저 conn을 None으로 (이미 끊긴 연결에 close 대기하면 hang할 수 있음)
+                old_conn = self.conn
+                self.conn = None
 
-        # 즉시 orderbook 캐시 삭제 (테스트 코드가 옛날 데이터 읽는 것 방지)
-        for mid in list(self._orderbook_subs):
-            self._orderbooks.pop(mid, None)
-            self._orderbook_nonces.pop(mid, None)
-            self._orderbook_asks_dict.pop(mid, None)
-            self._orderbook_bids_dict.pop(mid, None)
-            if mid in self._orderbook_events:
-                self._orderbook_events[mid].clear()
+                if old_conn:
+                    try:
+                        await asyncio.wait_for(old_conn.close(), timeout=2.0)
+                    except Exception:
+                        pass
 
-        await self._reconnect_with_backoff()
+                # 즉시 orderbook 캐시 삭제
+                for mid in list(self._orderbook_subs):
+                    self._orderbooks.pop(mid, None)
+                    self._orderbook_nonces.pop(mid, None)
+                    self._orderbook_asks_dict.pop(mid, None)
+                    self._orderbook_bids_dict.pop(mid, None)
+                    if mid in self._orderbook_events:
+                        self._orderbook_events[mid].clear()
+
+                await self._reconnect_with_backoff()
+            finally:
+                self._reconnecting = False
 
     async def _reconnect_with_backoff(self) -> None:
-        """지수 백오프로 재연결"""
+        """지수 백오프로 재연결 (이미 lock 안에서 호출됨)"""
         delay = RECONNECT_MIN
-        print(f"[LighterWS] _reconnect_with_backoff started")
         while not self._stop.is_set():
             try:
                 await asyncio.sleep(delay)
                 # 기존 태스크 정리
+                current_task = asyncio.current_task()
                 for t in self._tasks:
-                    if not t.done():
+                    if t != current_task and not t.done():
                         t.cancel()
-                self._tasks.clear()
+                self._tasks = [current_task] if current_task in self._tasks else []
 
-                print(f"[LighterWS] attempting connect...")
                 await self.connect()
-                print(f"[LighterWS] connect done, calling _resubscribe...")
                 await self._resubscribe()
-                print(f"[LighterWS] Reconnected successfully")
+                print(f"[LighterWS] Reconnected (server disconnect)")
                 return
             except Exception as e:
                 print(f"[LighterWS] Reconnect failed: {e}")
