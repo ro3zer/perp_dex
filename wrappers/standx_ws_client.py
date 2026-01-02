@@ -59,6 +59,9 @@ class StandXWSClient:
     _reconnecting: bool = field(default=False, repr=False)
     _reconnect_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
+    # Ping task
+    _ping_task: Optional[asyncio.Task] = field(default=None, repr=False)
+
     async def connect(self) -> bool:
         """Connect to WebSocket"""
         async with self._lock:
@@ -74,14 +77,33 @@ class StandXWSClient:
                 )
                 self._running = True
                 self._recv_task = asyncio.create_task(self._recv_loop())
+                self._ping_task = asyncio.create_task(self._ping_loop())
                 return True
             except Exception as e:
                 print(f"[standx_ws] connect failed: {e}")
                 return False
 
+    async def _ping_loop(self):
+        """Send periodic JSON ping to keep connection alive"""
+        while self._running:
+            try:
+                await asyncio.sleep(15)
+                if self._ws and self._running:
+                    await self._ws.send('{"ping":{}}')
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass  # Ignore ping errors, recv_loop will handle disconnection
+
     async def close(self):
         """Close WebSocket connection"""
         self._running = False
+        if self._ping_task:
+            self._ping_task.cancel()
+            try:
+                await self._ping_task
+            except asyncio.CancelledError:
+                pass
         if self._recv_task:
             self._recv_task.cancel()
             try:
@@ -122,6 +144,16 @@ class StandXWSClient:
         self._reconnect_event.clear()
         self._ws = None
         self._authenticated = False
+
+        # Cancel old ping task
+        if self._ping_task:
+            self._ping_task.cancel()
+            try:
+                await self._ping_task
+            except asyncio.CancelledError:
+                pass
+            self._ping_task = None
+
         delay = 1.0
         max_delay = 30.0
         max_attempts = 10
@@ -141,6 +173,8 @@ class StandXWSClient:
                         close_timeout=5,
                     )
                     print("[standx_ws] reconnected successfully")
+                    # Restart ping task
+                    self._ping_task = asyncio.create_task(self._ping_loop())
                     await self._resubscribe()
                     return
                 except Exception as e:
