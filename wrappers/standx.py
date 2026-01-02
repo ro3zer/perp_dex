@@ -265,7 +265,8 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
                 "upnl": float,
             }
         """
-        if self.fetch_by_ws or self.fetch_by_ws_partial:
+        # 서버가 아직 제대로 안줌
+        if self.fetch_by_ws:
             try:
                 return await self.get_collateral_ws()
             except Exception as e:

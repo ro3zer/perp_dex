@@ -7,7 +7,7 @@ from keys.pk_lighter import LIGHTER_KEY
 
 # test done
 
-coin = 'ETH/USDC'
+coin = 'BTC'
 symbol = f'{coin}'
 
 test_bool = {
@@ -23,11 +23,21 @@ test_bool = {
 
 async def main():
     lighter = await create_exchange('lighter',LIGHTER_KEY)
-    res = await lighter.get_open_orders('BTC')
-    print(res)
+    #res = await lighter.get_open_orders('BTC')
+    #print(res)
 
-    res = await lighter.cancel_orders('BTC', res)
-    print(res)
+    #res = await lighter.cancel_orders('BTC', res)
+    #print(res)
+
+   
+    #res = await lighter.create_order(symbol, 'buy', 0.0003)
+    #print(res)
+    #await asyncio.sleep(0.1)
+   
+    while True:
+        position = await lighter.get_position('BTC')
+        print(position)
+        await asyncio.sleep(0.1)
     return
     #available_symbols = await lighter.get_available_symbols()
     #print(available_symbols)
@@ -60,9 +70,9 @@ async def main():
     print(res)
     return
 
-    #res = await lighter.create_order(symbol, 'buy', 0.01, price=2500)
-    #print(res)
-    #await asyncio.sleep(0.5)
+    res = await lighter.create_order(symbol, 'buy', 0.01, price=2500)
+    print(res)
+    await asyncio.sleep(0.5)
     
     #coll = await lighter.get_collateral()
     #print(coll)
