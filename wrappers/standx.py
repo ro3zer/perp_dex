@@ -55,22 +55,13 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         self.fetch_by_ws = fetch_by_ws # partially... 현재 position과 balance는 ws 구독은 되나 서버에서 데이터를 안줌
         self.fetch_by_ws_partial = True
 
-        # Auth handlers (REST와 WS 분리 - 같은 토큰 사용 시 REST 호출이 WS 연결을 끊음)
+        # Auth handler
         self._auth = StandXAuth(
             wallet_address=wallet_address,
             chain=chain,
             evm_private_key=evm_private_key,
             session_token=session_token,
             http_timeout=http_timeout,
-            cache_suffix="rest",
-        )
-        self._auth_ws = StandXAuth(
-            wallet_address=wallet_address,
-            chain=chain,
-            evm_private_key=evm_private_key,
-            session_token=session_token,
-            http_timeout=http_timeout,
-            cache_suffix="ws",
         )
 
         # Symbol info cache
@@ -90,11 +81,7 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
             login_port: Port for browser signing (None = use private key)
             open_browser: Auto open browser for signing
         """
-        # REST용 로그인
         await self._auth.login(port=login_port, open_browser=open_browser)
-        # WS용 로그인 (별도 토큰 - REST 호출이 WS 연결을 끊는 문제 방지)
-        await self._auth_ws.login(port=login_port, open_browser=open_browser)
-
         await self._update_available_symbols()
 
         # Initialize WebSocket if enabled
@@ -112,41 +99,28 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
 
         self.ws_client = await WS_POOL.acquire(
             wallet_address=self.wallet_address,
-            jwt_token=self._auth_ws.token,  # WS 전용 토큰 사용
+            jwt_token=self._auth.token,
         )
 
     async def _reauth(self) -> bool:
-        """Re-authenticate when REST token expires"""
-        print("[standx] REST token expired, re-authenticating...")
+        """Re-authenticate when token expires"""
+        print("[standx] token expired, re-authenticating...")
         try:
             self._auth._token = None
             self._auth._logged_in = False
             await self._auth.login()
-            print("[standx] REST re-authentication successful")
-            return True
-        except Exception as e:
-            print(f"[standx] REST re-authentication failed: {e}")
-            return False
-
-    async def _reauth_ws(self) -> bool:
-        """Re-authenticate WebSocket when WS token expires"""
-        print("[standx] WS token expired, re-authenticating...")
-        try:
-            self._auth_ws._token = None
-            self._auth_ws._logged_in = False
-            await self._auth_ws.login()
 
             # Update WS client token if exists
             if self.ws_client:
-                self.ws_client.jwt_token = self._auth_ws.token
+                self.ws_client.jwt_token = self._auth.token
                 self.ws_client._authenticated = False
                 if self.ws_client._ws and self.ws_client._running:
-                    await self.ws_client.authenticate(self._auth_ws.token)
+                    await self.ws_client.authenticate(self._auth.token)
 
-            print("[standx] WS re-authentication successful")
+            print("[standx] re-authentication successful")
             return True
         except Exception as e:
-            print(f"[standx] WS re-authentication failed: {e}")
+            print(f"[standx] re-authentication failed: {e}")
             return False
 
     async def _auth_get(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> aiohttp.ClientResponse:
