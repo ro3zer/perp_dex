@@ -73,6 +73,7 @@ class StandXAuth:
         evm_private_key: Optional[str] = None,
         session_token: Optional[str] = None,
         http_timeout: float = 30.0,
+        cache_suffix: str = "",  # REST/WS용 캐시 파일 구분
     ):
         if not wallet_address:
             raise ValueError("wallet_address is required")
@@ -86,6 +87,7 @@ class StandXAuth:
         self.chain = chain
         self._pk = evm_private_key
         self._http_timeout = http_timeout
+        self._cache_suffix = cache_suffix
 
         # Ed25519 key pair for body signing
         self._ed25519_private_key: Optional[SigningKey] = None
@@ -533,7 +535,8 @@ window.addEventListener('load', async () => {{
         """Get cache file path for this wallet"""
         addr = (self.wallet_address or "default").lower()
         safe = addr.replace(":", "_")
-        return os.path.join(self._cache_dir(), f"standx_session_{safe}.json")
+        suffix = f"_{self._cache_suffix}" if self._cache_suffix else ""
+        return os.path.join(self._cache_dir(), f"standx_session_{safe}{suffix}.json")
 
     def _save_session_cache(self) -> None:
         """Save session to cache"""
