@@ -27,14 +27,14 @@ async def main():
     print(price)
     await asyncio.sleep(0.1)
     
-    position = await pacifica.get_position(symbol)
-    print(position)
-    await asyncio.sleep(0.5)
-    return
-
-    open_orders = await pacifica.get_open_orders(symbol)
-    print(open_orders)
-    await asyncio.sleep(0.5)
+    while True:
+        position = await pacifica.get_position(symbol)
+        print(position)
+        #await asyncio.sleep(0.5)
+        
+        open_orders = await pacifica.get_open_orders(symbol)
+        print(open_orders)
+        await asyncio.sleep(0.01)
     return
     for order in open_orders:
         # cancel all orders

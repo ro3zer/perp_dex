@@ -55,11 +55,13 @@ class LighterWSClient(BaseWSClient):
         self,
         account_id: int,
         auth_token: Optional[str] = None,
+        auth_token_getter: Optional[callable] = None,
         ws_url: str = WS_URL_MAINNET,
     ):
         super().__init__()
         self.account_id = account_id
         self.auth_token = auth_token
+        self._auth_token_getter = auth_token_getter  # 재연결 시 새 토큰 발급용
         self.WS_URL = ws_url  # 인스턴스별 URL 설정
 
         self._stop = asyncio.Event()
@@ -99,11 +101,16 @@ class LighterWSClient(BaseWSClient):
         self._dispatch(data)
 
     async def _resubscribe(self) -> None:
-        """재연결 시 구독 복원"""
-        old_subs = list(self._active_subs)
+        """재연결 시 구독 복원 (초기 연결과 동일하게 처리)"""
+        # 모든 캐시 초기화 (초기 상태로)
+        self._orders.clear()
+        self._orders_ready.clear()
+        self._positions.clear()
+        self._user_stats.clear()
+        self._assets.clear()
         self._active_subs.clear()
 
-        # Orderbook 캐시 초기화
+        # Orderbook 초기화
         for mid in list(self._orderbook_subs):
             self._orderbooks.pop(mid, None)
             self._orderbook_nonces.pop(mid, None)
@@ -112,8 +119,27 @@ class LighterWSClient(BaseWSClient):
             if mid in self._orderbook_events:
                 self._orderbook_events[mid].clear()
 
-        for ch in old_subs:
-            await self._send_subscribe(ch)
+        # 이벤트 초기화
+        self._market_stats_ready.clear()
+        self._user_stats_ready.clear()
+        self._account_all_ready.clear()
+
+        # 재연결 시 새 auth token 발급
+        if self._auth_token_getter:
+            try:
+                self.auth_token = self._auth_token_getter()
+                print(f"[LighterWS] Got new auth token for resubscribe")
+            except Exception as e:
+                print(f"[LighterWS] Failed to get new auth token: {e}")
+
+        # 초기 연결과 동일하게 subscribe() 호출
+        await self.subscribe()
+
+        # 오더북 재구독
+        for mid in list(self._orderbook_subs):
+            channel = f"order_book/{mid}"
+            await self._send_subscribe(channel)
+        # 데이터는 백그라운드에서 수신됨 (대기하지 않음)
 
     def _build_ping_message(self) -> Optional[str]:
         """Lighter는 force_reconnect 사용, ping 불필요"""
@@ -167,13 +193,15 @@ class LighterWSClient(BaseWSClient):
             if channel in self._active_subs:
                 return
             if not self._ws or not self._running:
+                print(f"[LighterWS] _send_subscribe SKIP: ws={self._ws is not None}, running={self._running}, channel={channel}")
                 return
             msg = {"type": "subscribe", "channel": channel}
             if self.auth_token and ("orders" in channel or "tx" in channel):
                 msg["auth"] = self.auth_token
-            await self._ws.send(_json_dumps(msg))
+            msg_str = _json_dumps(msg)
+            print(f"[LighterWS] SEND: {msg_str}")
+            await self._ws.send(msg_str)
             self._active_subs.add(channel)
-            logger.debug(f"[LighterWS] Subscribed: {channel}")
 
     # ==================== Orderbook 구독 ====================
 
@@ -258,6 +286,11 @@ class LighterWSClient(BaseWSClient):
             except Exception:
                 continue
 
+            # 디버그: 모든 메시지의 channel 출력
+            ch = msg.get("channel", "")
+            if ch and "market_stats" not in ch and "order_book" not in ch:
+                print(f"[LighterWS] RECV: channel={ch}")
+
             try:
                 self._dispatch(msg)
             except Exception as e:
@@ -275,7 +308,7 @@ class LighterWSClient(BaseWSClient):
             pass
 
     async def _force_reconnect(self) -> None:
-        """강제 재연결 수행"""
+        """강제 재연결 수행 (초기 연결과 동일하게 처리)"""
         if self._reconnecting:
             return
 
@@ -289,7 +322,14 @@ class LighterWSClient(BaseWSClient):
                 self._ws = None
                 await self._safe_close(old_ws)
 
-                # Orderbook 캐시 초기화
+                # 모든 캐시 초기화 (초기 상태로)
+                self._orders.clear()
+                self._orders_ready.clear()
+                self._positions.clear()
+                self._user_stats.clear()
+                self._assets.clear()
+
+                # Orderbook 초기화
                 for mid in list(self._orderbook_subs):
                     self._orderbooks.pop(mid, None)
                     self._orderbook_nonces.pop(mid, None)
@@ -302,7 +342,7 @@ class LighterWSClient(BaseWSClient):
                 if self._recv_task and not self._recv_task.done():
                     self._recv_task.cancel()
 
-                old_subs = list(self._active_subs)
+                # 구독 상태 초기화
                 self._active_subs.clear()
 
                 self._ws = await asyncio.wait_for(
@@ -314,14 +354,27 @@ class LighterWSClient(BaseWSClient):
                     ),
                     timeout=self.WS_CONNECT_TIMEOUT,
                 )
-                msg = "[LighterWS] Reconnected (periodic)"
-                print(msg)
-                logger.info(msg)
+                print("[LighterWS] Reconnected (periodic)")
+                logger.info("[LighterWS] Reconnected (periodic)")
 
                 self._recv_task = asyncio.create_task(self._recv_loop())
 
-                for ch in old_subs:
-                    await self._send_subscribe(ch)
+                # 재연결 시 새 auth token 발급
+                if self._auth_token_getter:
+                    try:
+                        self.auth_token = self._auth_token_getter()
+                        print(f"[LighterWS] Got new auth token for reconnect")
+                    except Exception as e:
+                        print(f"[LighterWS] Failed to get new auth token: {e}")
+
+                # 초기 연결과 동일하게 subscribe() 호출
+                await self.subscribe()
+
+                # 오더북 재구독
+                for mid in list(self._orderbook_subs):
+                    channel = f"order_book/{mid}"
+                    await self._send_subscribe(channel)
+                # 데이터는 백그라운드에서 수신됨 (대기하지 않음)
             except Exception as e:
                 msg = f"[LighterWS] Reconnect failed: {e}"
                 print(msg)
@@ -349,6 +402,10 @@ class LighterWSClient(BaseWSClient):
         """메시지 타입별 처리"""
         ch = str(msg.get("channel") or "")
         msg_type = str(msg.get("type") or "")
+
+        # 디버그: account_all_orders 메시지 수신 확인
+        if "account_all_orders" in ch:
+            print(f"[LighterWS] RECV account_all_orders: channel={ch}")
 
         if msg_type == "pong" or ch == "pong":
             return
@@ -471,21 +528,61 @@ class LighterWSClient(BaseWSClient):
                     pass
 
     def _handle_orders(self, msg: Dict[str, Any]) -> None:
-        """account_all_orders 처리"""
+        """
+        account_all_orders 처리.
+        WS는 변경된 주문만 보낼 수 있으므로, order_index로 병합.
+        - 새 주문: 추가
+        - 기존 주문 업데이트: 갱신
+        - cancelled/filled: 목록에서 제거
+        """
+        print(f"[LighterWS] _handle_orders called, orders_ready was {self._orders_ready.is_set()}")
         orders = msg.get("orders")
         if orders and isinstance(orders, dict):
             for k, v in orders.items():
                 try:
                     mid = int(k)
-                    if isinstance(v, list):
-                        self._orders[mid] = v
-                    else:
-                        self._orders[mid] = [v] if v else []
-                except Exception:
-                    pass
+                    incoming = v if isinstance(v, list) else ([v] if v else [])
+
+                    # 디버그: 들어온 주문 로깅
+                    incoming_summary = [
+                        {"oid": o.get("order_index"), "status": o.get("status")}
+                        for o in incoming
+                    ]
+                    logger.debug(f"[orders] mid={mid} incoming={incoming_summary}")
+
+                    # 기존 주문을 order_index로 인덱싱
+                    existing = self._orders.get(mid, [])
+                    order_map: Dict[Any, Dict[str, Any]] = {}
+                    for o in existing:
+                        oid = o.get("order_index")
+                        if oid is not None:
+                            order_map[oid] = o
+
+                    # 새로 온 주문 병합
+                    for o in incoming:
+                        oid = o.get("order_index")
+                        if oid is not None:
+                            order_map[oid] = o  # 추가 or 덮어쓰기
+
+                    # cancelled/filled 주문 제거, 나머지만 유지
+                    open_statuses = ("open", "pending", "partially_filled", "")
+                    result = []
+                    for o in order_map.values():
+                        status = str(o.get("status", "")).lower()
+                        if status in open_statuses:
+                            result.append(o)
+
+                    # 디버그: 결과 로깅
+                    result_summary = [o.get("order_index") for o in result]
+                    logger.debug(f"[orders] mid={mid} result={result_summary} (was {len(existing)}, incoming {len(incoming)})")
+
+                    self._orders[mid] = result
+                except Exception as e:
+                    logger.error(f"[orders] error: {e}")
 
         if not self._orders_ready.is_set():
             self._orders_ready.set()
+            print(f"[LighterWS] _orders_ready SET")
 
     def _handle_orderbook(self, msg: Dict[str, Any]) -> None:
         """order_book 처리 (delta-based)"""
@@ -623,8 +720,9 @@ class LighterWSClient(BaseWSClient):
         except asyncio.TimeoutError:
             return False
 
-    async def wait_price_ready(self, _symbol: str = "", timeout: float = 5.0) -> bool:
-        """가격 데이터 수신 대기 (alias for wait_ready)"""
+    async def wait_price_ready(self, symbol: str = "", timeout: float = 5.0) -> bool:  # noqa: ARG002
+        """가격 데이터 수신 대기 (Lighter는 전체 마켓 구독이므로 symbol 무시)"""
+        del symbol  # unused, for API compatibility
         return await self.wait_ready(timeout=timeout)
 
     def get_mark_price(self, symbol: str) -> Optional[float]:
@@ -901,6 +999,7 @@ class LighterWSPool:
         self,
         account_id: int,
         auth_token: Optional[str] = None,
+        auth_token_getter: Optional[callable] = None,
         ws_url: str = WS_URL_MAINNET,
         symbol_to_market_id: Optional[Dict[str, int]] = None,
     ) -> LighterWSClient:
@@ -911,11 +1010,15 @@ class LighterWSPool:
                 client = self._clients[account_id]
                 if symbol_to_market_id:
                     client.set_market_mapping(symbol_to_market_id)
+                # 기존 클라이언트에도 새 auth_token_getter 갱신
+                if auth_token_getter:
+                    client._auth_token_getter = auth_token_getter
                 return client
 
             client = LighterWSClient(
                 account_id=account_id,
                 auth_token=auth_token,
+                auth_token_getter=auth_token_getter,
                 ws_url=ws_url,
             )
             if symbol_to_market_id:

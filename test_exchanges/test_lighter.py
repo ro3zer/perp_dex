@@ -25,8 +25,12 @@ async def main():
     lighter = await create_exchange('lighter',LIGHTER_KEY)
     
     while True:
+        position = await lighter.get_position('BTC')
+        print(position)
         res = await lighter.get_open_orders('BTC')
-        print(res)
+        print(len(res), [od.get('id') for od in res if len(res)>0])
+        res = await lighter.get_orderbook('BTC')
+        print(res.get('bids', [])[:1], res.get('asks', [])[:1])
         await asyncio.sleep(0.1)
 
     for od in res:

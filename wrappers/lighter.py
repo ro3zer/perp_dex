@@ -93,10 +93,11 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
             for symbol, info in self.market_info.items()
         }
         
-        # 풀에서 클라이언트 획득
+        # 풀에서 클라이언트 획득 (auth_token_getter로 재연결 시 새 토큰 발급)
         self._ws_client = await LIGHTER_WS_POOL.acquire(
             account_id=self._account_id,
             auth_token=self.get_auth(),
+            auth_token_getter=self.get_auth,
             symbol_to_market_id=symbol_to_market_id,
         )
         

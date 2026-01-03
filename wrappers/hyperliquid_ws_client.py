@@ -544,6 +544,28 @@ class HLWSClientRaw(BaseWSClient):
         """
         if not self._ws:
             return
+
+        # 0) 캐시된 데이터 초기화 (stale data 방지)
+        # 유저 데이터 (재구독 시 새로운 데이터로 갱신됨)
+        for u in list(self._user_subs):
+            self._user_margin_by_dex[u] = {}
+            self._user_positions_by_dex_norm[u] = {}
+            self._user_positions_by_dex_raw[u] = {}
+            self._user_open_orders[u] = []
+            self._user_balances[u] = {}
+            # 이벤트 초기화 (새 데이터 대기할 수 있도록)
+            if u in self._open_orders_ready_by_user:
+                self._open_orders_ready_by_user[u].clear()
+
+        # 오더북 캐시 초기화
+        self._orderbooks.clear()
+        for ev in self._orderbook_events.values():
+            ev.clear()
+
+        # 가격 이벤트 초기화
+        for ev in self._price_events.values():
+            ev.clear()
+
         # 1) 클라이언트 측 중복 방지 셋 초기화
         self._active_subs.clear()
 
