@@ -19,10 +19,9 @@ class TreadfiHlExchange(HyperliquidBase):
 		{"name": "toPerp", "type": "bool"},
 		{"name": "nonce", "type": "uint64"},
 	]
-	def __init__(self, session_cookies=None, login_wallet_address=None, login_wallet_private_key=None, trading_wallet_address=None, account_name=None, fetch_by_ws=True, trading_wallet_private_key=None, options=None):
+	def __init__(self, session_cookies=None, login_wallet_address=None, login_wallet_private_key=None, trading_wallet_address=None, account_name=None, trading_wallet_private_key=None, options=None):
 		super().__init__(
 			wallet_address=trading_wallet_address or login_wallet_address,
-			fetch_by_ws=fetch_by_ws,
 		)
 		self.login_wallet_address = login_wallet_address
 		self.trading_wallet_address = trading_wallet_address or login_wallet_address

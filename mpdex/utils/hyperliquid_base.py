@@ -38,7 +38,6 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
         builder_code: Optional[str] = None,
         builder_fee_pair: Optional[dict] = None,
         *,
-        fetch_by_ws: bool = True,
         FrontendMarket: bool = False,
     ):
         super().__init__()
@@ -69,8 +68,18 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
         # WS
         self.ws_client = None
         self._ws_pool_key = None
-        self.fetch_by_ws = fetch_by_ws
         self.FrontendMarket = FrontendMarket
+        # WS support flags
+        self.ws_supported = {
+            "get_mark_price": True,
+            "get_position": True,
+            "get_open_orders": True,
+            "get_collateral": True,
+            "get_orderbook": True,
+            "create_order": True,  # Hyperliquid supports WS trading
+            "cancel_orders": True,  # Hyperliquid supports WS cancel
+            "update_leverage": False,
+        }
 
     # -------------------- 추상/오버라이드 대상 --------------------
     async def _make_signed_payload(self, action: dict) -> dict:
@@ -217,8 +226,7 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
         except Exception:
             pass
 
-        if self.fetch_by_ws:
-            await self._create_ws_client()
+        await self._create_ws_client()
 
         self.update_available_symbols()
 
@@ -437,14 +445,12 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
         반환 스키마:
           {"entry_price": float|None, "unrealized_pnl": float|None, "side": "long"|"short"|"flat", "size": float}
         """
-        if self.fetch_by_ws:
-            try:
-                pos = await self.get_position_ws(symbol)
-                if pos:
-                    return pos
-            except Exception  as e:
-                print(f"hyperliquid: get_position falling back to rest api / symbol {symbol} / error in ws {e}")
-                pass
+        try:
+            pos = await self.get_position_ws(symbol)
+            if pos:
+                return pos
+        except Exception as e:
+            print(f"hyperliquid: get_position falling back to rest api / symbol {symbol} / error in ws {e}")
         return await self.get_position_rest(symbol)
 
     async def get_position_ws(self, symbol: str, timeout: float = 2.0):
@@ -504,12 +510,10 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
         if "/" in coin: # symbol 대비
             coin = coin.split("/")[0]
 
-        if self.fetch_by_ws:
-            try:
-                return await self.get_spot_balance_ws(coin)
-            except Exception as e:
-                print(f"hyperliquid: get_collateral falling back to rest api / error in ws {e}")
-                pass
+        try:
+            return await self.get_spot_balance_ws(coin)
+        except Exception as e:
+            print(f"hyperliquid: get_spot_balance falling back - error in ws {e}")
         print('rest api not supported for get_spot_balance')
         
     async def get_spot_balance_ws(self, coin: str = None, timeout: float = 2.0) -> dict:
@@ -536,13 +540,10 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
         return spot_balances
 
     async def get_collateral(self):
-        if self.fetch_by_ws:
-            try:
-                return await self.get_collateral_ws()
-            except Exception as e:
-                print(f"hyperliquid: get_collateral falling back to rest api / error in ws {e}")
-                pass
-
+        try:
+            return await self.get_collateral_ws()
+        except Exception as e:
+            print(f"hyperliquid: get_collateral falling back to rest api / error in ws {e}")
         return await self.get_collateral_rest()
 
     async def get_collateral_ws(self, timeout: float = 2.0):
@@ -654,12 +655,10 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
     async def get_mark_price(self, symbol: str, *, is_spot: bool = False):
         if "/" in symbol:
             is_spot = True
-        if self.fetch_by_ws:
-            try:
-                return await self.get_mark_price_ws(symbol, is_spot=is_spot)
-            except Exception as e:
-                print(f"hyperliquid: get_mark_price falling back to rest api / symbol {symbol} / error in ws {e}")
-                pass
+        try:
+            return await self.get_mark_price_ws(symbol, is_spot=is_spot)
+        except Exception as e:
+            print(f"hyperliquid: get_mark_price falling back to rest api / symbol {symbol} / error in ws {e}")
         return await self.get_mark_price_rest(symbol, is_spot=is_spot)
 
     async def get_mark_price_ws(self, symbol: str, *, is_spot: bool = False, timeout: float = 3.0):
@@ -754,7 +753,7 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
 
         for attempt in range(max_retries):
             # WS 시도
-            if prefer_ws and self.fetch_by_ws:
+            if prefer_ws:
                 try:
                     if not self.ws_client:
                         await self._create_ws_client()
@@ -930,12 +929,10 @@ class HyperliquidBase(MultiPerpDexMixin, MultiPerpDex):
         return {"order_id": o.get("oid"), "symbol": symbol, "side": "short" if o.get("side") == "A" else "long", "price": float(o.get("limitPx") or 0), "size": float(o.get("sz") or 0)}
 
     async def get_open_orders(self, symbol: str):
-        if self.fetch_by_ws:
-            try:
-                return await self.get_open_orders_ws(symbol)
-            except Exception as e:
-                print(f"hyperliquid get_open_orders: falling back to rest api error {e}")
-                pass
+        try:
+            return await self.get_open_orders_ws(symbol)
+        except Exception as e:
+            print(f"hyperliquid get_open_orders: falling back to rest api error {e}")
         return await self.get_open_orders_rest(symbol)
 
     async def get_open_orders_ws(self, symbol: str, timeout: float = 2.0):

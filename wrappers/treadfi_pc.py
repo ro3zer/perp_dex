@@ -38,7 +38,6 @@ class TreadfiPcExchange(MultiPerpDexMixin, MultiPerpDex):
 			login_wallet_private_key="0x...",  # or use browser signing
 			account_name="my_account",
 			pacifica_public_key="...",  # Solana pubkey for Pacifica
-			fetch_by_ws=True,
 		)
 		await ex.init()
 	"""
@@ -50,7 +49,6 @@ class TreadfiPcExchange(MultiPerpDexMixin, MultiPerpDex):
 		login_wallet_private_key: Optional[str] = None,
 		account_name: Optional[str] = None,
 		pacifica_public_key: Optional[str] = None,
-		fetch_by_ws: bool = True,
 	):
 		super().__init__()
 
@@ -67,8 +65,18 @@ class TreadfiPcExchange(MultiPerpDexMixin, MultiPerpDex):
 
 		# Pacifica data fetching
 		self.pacifica_public_key = pacifica_public_key
-		self.fetch_by_ws = fetch_by_ws
 		self.ws_client = None
+		# WS support flags (uses Pacifica WS)
+		self.ws_supported = {
+			"get_mark_price": True,
+			"get_position": True,
+			"get_open_orders": True,
+			"get_collateral": True,
+			"get_orderbook": True,
+			"create_order": False,  # Uses REST
+			"cancel_orders": False,  # Uses REST
+			"update_leverage": False,
+		}
 
 		# HTTP session
 		self._http: Optional[aiohttp.ClientSession] = None
@@ -118,9 +126,8 @@ class TreadfiPcExchange(MultiPerpDexMixin, MultiPerpDex):
 		# 3. Update available symbols
 		self.update_available_symbols()
 
-		# 4. Initialize WS client if enabled
-		if self.fetch_by_ws:
-			await self._create_ws_client()
+		# 4. Initialize WS client
+		await self._create_ws_client()
 
 		return self
 
@@ -576,13 +583,11 @@ alert('Signing/Submit failed: ' + e.message);
 		"""Get mark price (WS first, REST fallback)"""
 		pac_symbol = self._symbol_to_pacifica(symbol)
 
-		if self.fetch_by_ws:
-			try:
-				return await self.get_mark_price_ws(pac_symbol)
-			except Exception as e:
-				print(f"[treadfi_pc] get_mark_price WS failed, falling back to REST: {e}")
-
-		return await self.get_mark_price_rest(pac_symbol, force_refresh=force_refresh)
+		try:
+			return await self.get_mark_price_ws(pac_symbol)
+		except Exception as e:
+			print(f"[treadfi_pc] get_mark_price WS failed, falling back to REST: {e}")
+			return await self.get_mark_price_rest(pac_symbol, force_refresh=force_refresh)
 
 	async def get_mark_price_ws(self, symbol: str, timeout: float = 5.0) -> Optional[float]:
 		if not self.ws_client:
@@ -650,7 +655,7 @@ alert('Signing/Submit failed: ' + e.message);
 		"""Get position (WS first, REST fallback)"""
 		pac_symbol = self._symbol_to_pacifica(symbol)
 
-		if self.fetch_by_ws and self.pacifica_public_key:
+		if self.pacifica_public_key:
 			try:
 				return await self.get_position_ws(pac_symbol)
 			except Exception as e:
@@ -715,7 +720,7 @@ alert('Signing/Submit failed: ' + e.message);
 
 	async def get_collateral(self) -> Dict[str, Any]:
 		"""Get collateral (WS first, REST fallback)"""
-		if self.fetch_by_ws and self.pacifica_public_key:
+		if self.pacifica_public_key:
 			try:
 				return await self.get_collateral_ws()
 			except Exception as e:

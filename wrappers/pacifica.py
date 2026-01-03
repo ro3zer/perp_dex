@@ -36,7 +36,7 @@ def _get_signature_header_and_url(req_type:str):
 
 class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
     # no use of private key, but use agent wallets instead (api)
-    def __init__(self, public_key, agent_public_key, agent_private_key, *, fetch_by_ws: bool = True, order_by_ws: bool = True):
+    def __init__(self, public_key, agent_public_key, agent_private_key):
         super().__init__()
         if not (public_key and agent_public_key and agent_private_key):
             raise ValueError("Pacifica required, pub key, agent pub key, and agent private key")
@@ -56,9 +56,18 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         self._price_cache: Dict[str, Dict[str, Any]] = {}
 
         # WebSocket
-        self.fetch_by_ws = fetch_by_ws
-        self.order_by_ws = order_by_ws
         self.ws_client = None
+        # WS support flags
+        self.ws_supported = {
+            "get_mark_price": True,
+            "get_position": True,
+            "get_open_orders": True,
+            "get_collateral": True,
+            "get_orderbook": True,
+            "create_order": True,
+            "cancel_orders": True,
+            "update_leverage": False,
+        }
 
 
     def _session(self) -> aiohttp.ClientSession:
@@ -121,9 +130,8 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         # Update available symbols
         self.update_available_symbols()
 
-        # Initialize WebSocket if enabled
-        if self.fetch_by_ws:
-            await self._create_ws_client()
+        # Initialize WebSocket
+        await self._create_ws_client()
 
         return self
 
@@ -278,7 +286,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
 
     async def create_order(self, symbol, side, amount, price=None, order_type='market', *, is_reduce_only=False, slippage = "0.1"):
         """
-        Create order (WS or REST based on order_by_ws setting)
+        Create order (WS preferred, REST fallback)
         """
         symbol = symbol.upper()
 
@@ -299,7 +307,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
             order_type = "limit"
             price_adjusted = self._adjust_price_tick(symbol, price, rounding=ROUND_HALF_UP)
 
-        if self.order_by_ws:
+        if self.ws_client:
             try:
                 return await self.create_order_ws(
                     symbol=symbol,
@@ -398,7 +406,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         Get position (WS first, REST fallback)
         """
         symbol = symbol.upper()
-        if self.fetch_by_ws:
+        if self.ws_client:
             try:
                 return await self.get_position_ws(symbol)
             except Exception as e:
@@ -469,7 +477,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         """
         Get collateral (WS first, REST fallback)
         """
-        if self.fetch_by_ws:
+        if self.ws_client:
             try:
                 return await self.get_collateral_ws()
             except Exception as e:
@@ -516,7 +524,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         Get open orders (WS first, REST fallback)
         """
         symbol = symbol.upper()
-        if self.fetch_by_ws:
+        if self.ws_client:
             try:
                 return await self.get_open_orders_ws(symbol)
             except Exception as e:
@@ -578,7 +586,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
 
     async def cancel_orders(self, symbol, open_orders = None):
         """
-        Cancel orders (WS or REST based on order_by_ws setting)
+        Cancel orders (WS preferred, REST fallback)
         """
         symbol = symbol.upper()
         if open_orders is None:
@@ -590,7 +598,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         if open_orders is not None and not isinstance(open_orders, list):
             open_orders = [open_orders]
 
-        if self.order_by_ws:
+        if self.ws_client:
             try:
                 return await self.cancel_orders_ws(symbol, open_orders)
             except Exception as e:
@@ -737,7 +745,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
         """
         symbol = str(symbol).upper()
 
-        if self.fetch_by_ws:
+        if self.ws_client:
             try:
                 return await self.get_mark_price_ws(symbol)
             except Exception as e:

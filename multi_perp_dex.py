@@ -4,6 +4,18 @@ class MultiPerpDex(ABC):
     def __init__(self):
         self.has_spot = False
         self.available_symbols = {}
+        # WebSocket support flags for each function
+        # Override in subclass if WS is implemented for that function
+        self.ws_supported = {
+            "get_mark_price": False,
+            "get_position": False,
+            "get_open_orders": False,
+            "get_collateral": False,
+            "get_orderbook": False,
+            "create_order": False,
+            "cancel_orders": False,
+            "update_leverage": False,
+        }
 
     @abstractmethod
     async def create_order(self, symbol, side, amount, price=None, order_type='market'):

@@ -18,6 +18,17 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
         self.BASE_URL = "https://api.backpack.exchange/api/v1"
         self.COLLATERAL_SYMBOL = 'USDC'
         self._ws_client: Optional[BackpackWSClient] = None
+        # WS support flags
+        self.ws_supported = {
+            "get_mark_price": True,
+            "get_position": True,
+            "get_open_orders": True,
+            "get_collateral": False,
+            "get_orderbook": True,
+            "create_order": False,
+            "cancel_orders": False,
+            "update_leverage": False,
+        }
 
     async def init(self):
         await self.update_avaiable_symbols()

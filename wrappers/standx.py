@@ -26,7 +26,6 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
             wallet_address="0x...",
             chain="bsc",
             evm_private_key="0x...",
-            fetch_by_ws=True  # Enable WebSocket for price/position/balance
         )
         await ex.init()
 
@@ -45,15 +44,23 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         evm_private_key: Optional[str] = None,
         session_token: Optional[str] = None,
         http_timeout: float = 30.0,
-        fetch_by_ws: bool = False,
     ):
         super().__init__()
         self.has_spot = False
         self.wallet_address = wallet_address
         self.chain = chain
         self._http_timeout = http_timeout
-        self.fetch_by_ws = fetch_by_ws # partially... 현재 position과 balance는 ws 구독은 되나 서버에서 데이터를 안줌
-        self.fetch_by_ws_partial = True
+        # WS support flags (StandX has partial WS support - position/balance subscription works but server doesn't send data)
+        self.ws_supported = {
+            "get_mark_price": True,
+            "get_position": False,  # WS subscription exists but server doesn't send data
+            "get_open_orders": False,
+            "get_collateral": False,  # WS subscription exists but server doesn't send data
+            "get_orderbook": True,
+            "create_order": False,
+            "cancel_orders": False,
+            "update_leverage": False,
+        }
 
         # Auth handler
         self._auth = StandXAuth(
@@ -85,8 +92,7 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         await self._update_available_symbols()
 
         # Initialize WebSocket if enabled
-        if self.fetch_by_ws or self.fetch_by_ws_partial:
-            await self._create_ws_client()
+        await self._create_ws_client()
 
         return self
 
@@ -210,12 +216,10 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
     # ----------------------------
     async def get_mark_price(self, symbol: str) -> str:
         """Get mark price (WS first, REST fallback)"""
-        if self.fetch_by_ws or self.fetch_by_ws_partial:
-            try:
-                return await self.get_mark_price_ws(symbol)
-            except Exception as e:
-                print(f"[standx] get_mark_price falling back to REST: {e}")
-        print("[standx] get_mark_price via REST")
+        try:
+            return await self.get_mark_price_ws(symbol)
+        except Exception as e:
+            print(f"[standx] get_mark_price falling back to REST: {e}")
         return await self.get_mark_price_rest(symbol)
 
     async def get_mark_price_ws(self, symbol: str, timeout: float = 5.0) -> str:
@@ -265,13 +269,7 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
                 "upnl": float,
             }
         """
-        # 서버가 아직 제대로 안줌
-        if self.fetch_by_ws:
-            try:
-                return await self.get_collateral_ws()
-            except Exception as e:
-                print(f"[standx] get_collateral falling back to REST: {e}")
-
+        # WS subscription exists but server doesn't send data - use REST
         return await self.get_collateral_rest()
 
     async def get_collateral_ws(self, timeout: float = 5.0) -> Dict[str, Any]:
@@ -315,16 +313,8 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
     # ----------------------------
     async def get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
-        Get position (WS first, REST fallback)
-
-        Returns position dict or None if no position
+        Get position via REST (WS subscription exists but server doesn't send data)
         """
-        if self.fetch_by_ws:
-            try:
-                return await self.get_position_ws(symbol)
-            except Exception as e:
-                print(f"[standx] get_position falling back to REST: {e}")
-
         return await self.get_position_rest(symbol)
 
     async def get_position_ws(self, symbol: str, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
@@ -582,15 +572,9 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
     # ----------------------------
     async def get_orderbook(self, symbol: str, timeout: float = 5.0) -> Dict[str, Any]:
         """
-        Get orderbook (WS only when fetch_by_ws=True, REST otherwise)
-
-        When fetch_by_ws=True, orderbook is fetched via WebSocket only (no REST fallback).
+        Get orderbook via WS
         """
-        if self.fetch_by_ws or self.fetch_by_ws_partial:
-            return await self.get_orderbook_ws(symbol, timeout=timeout)
-        print("[standx] get_orderbook via REST")
-
-        return await self.get_orderbook_rest(symbol)
+        return await self.get_orderbook_ws(symbol, timeout=timeout)
 
     async def get_orderbook_ws(self, symbol: str, timeout: float = 5.0) -> Dict[str, Any]:
         """Get orderbook via WebSocket (no REST fallback)"""

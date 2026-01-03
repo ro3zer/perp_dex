@@ -22,7 +22,6 @@ class HyperliquidExchange(HyperliquidBase):
         builder_code=None,
         builder_fee_pair=None,
         *,
-        fetch_by_ws=True,
         FrontendMarket=False,
     ):
         super().__init__(
@@ -30,7 +29,6 @@ class HyperliquidExchange(HyperliquidBase):
             vault_address=vault_address,
             builder_code=builder_code,
             builder_fee_pair=builder_fee_pair,
-            fetch_by_ws=fetch_by_ws,
             FrontendMarket=FrontendMarket,
         )
         self.by_agent = by_agent

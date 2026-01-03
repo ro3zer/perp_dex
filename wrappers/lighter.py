@@ -15,14 +15,12 @@ STABLES = ['USDC']
 
 class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
     def __init__(
-        self, 
-        account_id, 
-        private_key, 
-        api_key_id, 
-        l1_address, 
+        self,
+        account_id,
+        private_key,
+        api_key_id,
+        l1_address,
         l1_private_key=None,
-        *,
-        fetch_by_ws: bool = True,  # [ADDED] WS 모드 플래그
     ):
         super().__init__()
         logging.getLogger().setLevel(logging.WARNING)
@@ -44,10 +42,20 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
         self._collateral_last_fetch_ts: float = 0.0
         self._collateral_cooldown_sec: float = 0.5
 
-        # [ADDED] WebSocket 관련
-        self._fetch_by_ws = fetch_by_ws
+        # WebSocket
         self._ws_client: Optional[LighterWSClient] = None
-        self._account_id = account_id 
+        self._account_id = account_id
+        # WS support flags
+        self.ws_supported = {
+            "get_mark_price": True,
+            "get_position": True,
+            "get_open_orders": True,
+            "get_collateral": True,
+            "get_orderbook": True,
+            "create_order": False,
+            "cancel_orders": False,
+            "update_leverage": False,
+        } 
 
     def get_auth(self, expiry_sec=600):
         now = int(time.time())
@@ -76,11 +84,10 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
                     }
         
         self.update_available_symbols()
-        
-        # [ADDED] WebSocket 모드면 WS 클라이언트 초기화
-        if self._fetch_by_ws:
-            await self._init_ws()
-        
+
+        # WebSocket 클라이언트 초기화
+        await self._init_ws()
+
         return self
 
     # [ADDED] ========== WebSocket 관련 메서드 ==========
@@ -111,8 +118,6 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
 
     async def ensure_ws_ready(self) -> bool:
         """WS 연결 보장 (필요시 재연결)"""
-        if not self._fetch_by_ws:
-            return False
         if self._ws_client and self._ws_client.connected:
             return True
         # 재초기화
@@ -121,21 +126,19 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
 
     async def get_all_prices(self) -> Dict[str, float]:
         """
-        [WS 전용] 모든 마켓의 가격을 한 번에 반환.
-        WS 모드가 아니면 빈 dict 반환.
+        모든 마켓의 가격을 한 번에 반환 (WS).
         반환 형식: {"ETH": 3500.0, "BTC": 95000.0, ...}
         """
-        if not self._fetch_by_ws or not self._ws_client:
+        if not self._ws_client:
             return {}
         return self._ws_client.get_all_prices()
 
     async def get_all_positions(self) -> Dict[str, Dict[str, Any]]:
         """
-        [WS 전용] 모든 포지션을 한 번에 반환.
-        WS 모드가 아니면 빈 dict 반환.
+        모든 포지션을 한 번에 반환 (WS).
         반환 형식: {"ETH": {"size": 0.5, "side": "long", ...}, ...}
         """
-        if not self._fetch_by_ws or not self._ws_client:
+        if not self._ws_client:
             return {}
         return self._ws_client.get_all_positions()
     
@@ -283,8 +286,8 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
             return {"status": "error", "message": str(e)}
     
     async def get_mark_price(self, symbol):
-        # [MODIFIED] WS 모드면 캐시에서 조회
-        if self._fetch_by_ws and self._ws_client:
+        # WS에서 조회
+        if self._ws_client:
             m_info = self.market_info.get(symbol)
             is_spot = m_info and m_info.get('market_type', 'perp') == 'spot'
             if is_spot:
@@ -416,7 +419,7 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
         
     async def get_position(self, symbol):
         # [MODIFIED] WS 모드면 캐시에서 조회
-        if self._fetch_by_ws and self._ws_client:
+        if self._ws_client:
             # account_all 데이터가 수신되었는지 확인
             if self._ws_client._account_all_ready.is_set():
                 pos = self._ws_client.get_position(symbol)
@@ -461,7 +464,7 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
         - force_refresh=True면 강제로 REST API 호출
         """
         # [MODIFIED] WS 모드면 WS 캐시에서 조회
-        if self._fetch_by_ws and self._ws_client and not force_refresh:
+        if self._ws_client and not force_refresh:
             ws_coll = self._ws_client.get_collateral()
             ws_assets = self._ws_client.get_assets()
             
@@ -553,7 +556,7 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
     
     async def get_open_orders(self, symbol):
         # [MODIFIED] WS 모드면 캐시에서 조회
-        if self._fetch_by_ws and self._ws_client:
+        if self._ws_client:
             if self._ws_client._orders_ready.is_set():
                 orders = self._ws_client.get_open_orders(symbol)
                 # WS에서 반환된 오더가 있거나, orders_ready가 set된 상태면 WS 결과 신뢰
@@ -586,7 +589,7 @@ class LighterExchange(MultiPerpDexMixin, MultiPerpDex):
         
         반환: { 'ETH-USD': [...], 'BTC-USD': [...], ... }
         """
-        if self._fetch_by_ws and self._ws_client:
+        if self._ws_client:
             if self._ws_client._orders_ready.is_set():
                 return self._ws_client.get_all_open_orders()
         
