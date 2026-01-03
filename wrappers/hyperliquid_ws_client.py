@@ -949,7 +949,6 @@ class HLWSClientRaw(BaseWSClient):
             # 첫 구독자일 때만 실제 구독 메시지 전송 (lock 유지)
             if current_count == 0:
                 sub = {"type": "l2Book", "coin": coin, "nSigFigs": None}
-                print(sub)
                 await self._send_subscribe(sub)
 
     async def unsubscribe_orderbook(self, symbol: str) -> bool:
