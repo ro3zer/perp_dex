@@ -128,7 +128,6 @@ class LighterWSClient(BaseWSClient):
         if self._auth_token_getter:
             try:
                 self.auth_token = self._auth_token_getter()
-                print(f"[LighterWS] Got new auth token for resubscribe")
             except Exception as e:
                 print(f"[LighterWS] Failed to get new auth token: {e}")
 
@@ -193,14 +192,11 @@ class LighterWSClient(BaseWSClient):
             if channel in self._active_subs:
                 return
             if not self._ws or not self._running:
-                print(f"[LighterWS] _send_subscribe SKIP: ws={self._ws is not None}, running={self._running}, channel={channel}")
                 return
             msg = {"type": "subscribe", "channel": channel}
             if self.auth_token and ("orders" in channel or "tx" in channel):
                 msg["auth"] = self.auth_token
-            msg_str = _json_dumps(msg)
-            print(f"[LighterWS] SEND: {msg_str}")
-            await self._ws.send(msg_str)
+            await self._ws.send(_json_dumps(msg))
             self._active_subs.add(channel)
 
     # ==================== Orderbook 구독 ====================
@@ -286,11 +282,6 @@ class LighterWSClient(BaseWSClient):
             except Exception:
                 continue
 
-            # 디버그: 모든 메시지의 channel 출력
-            ch = msg.get("channel", "")
-            if ch and "market_stats" not in ch and "order_book" not in ch:
-                print(f"[LighterWS] RECV: channel={ch}")
-
             try:
                 self._dispatch(msg)
             except Exception as e:
@@ -363,7 +354,6 @@ class LighterWSClient(BaseWSClient):
                 if self._auth_token_getter:
                     try:
                         self.auth_token = self._auth_token_getter()
-                        print(f"[LighterWS] Got new auth token for reconnect")
                     except Exception as e:
                         print(f"[LighterWS] Failed to get new auth token: {e}")
 
@@ -402,10 +392,6 @@ class LighterWSClient(BaseWSClient):
         """메시지 타입별 처리"""
         ch = str(msg.get("channel") or "")
         msg_type = str(msg.get("type") or "")
-
-        # 디버그: account_all_orders 메시지 수신 확인
-        if "account_all_orders" in ch:
-            print(f"[LighterWS] RECV account_all_orders: channel={ch}")
 
         if msg_type == "pong" or ch == "pong":
             return
@@ -535,7 +521,6 @@ class LighterWSClient(BaseWSClient):
         - 기존 주문 업데이트: 갱신
         - cancelled/filled: 목록에서 제거
         """
-        print(f"[LighterWS] _handle_orders called, orders_ready was {self._orders_ready.is_set()}")
         orders = msg.get("orders")
         if orders and isinstance(orders, dict):
             for k, v in orders.items():
@@ -582,7 +567,6 @@ class LighterWSClient(BaseWSClient):
 
         if not self._orders_ready.is_set():
             self._orders_ready.set()
-            print(f"[LighterWS] _orders_ready SET")
 
     def _handle_orderbook(self, msg: Dict[str, Any]) -> None:
         """order_book 처리 (delta-based)"""

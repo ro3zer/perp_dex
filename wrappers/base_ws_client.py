@@ -256,31 +256,24 @@ class BaseWSClient(ABC):
 
     async def _handle_disconnect(self) -> None:
         """연결 끊김 처리"""
-        print(f"[{self.__class__.__name__}] _handle_disconnect called, _running={self._running}, _reconnecting={self._reconnecting}")
         old_ws = self._ws
         self._ws = None
         await self._safe_close(old_ws)
-        print(f"[{self.__class__.__name__}] calling _reconnect_with_backoff...")
         await self._reconnect_with_backoff()
-        print(f"[{self.__class__.__name__}] _reconnect_with_backoff returned")
 
     async def _reconnect_with_backoff(self) -> None:
         """Exponential backoff으로 재연결"""
-        print(f"[{self.__class__.__name__}] _reconnect_with_backoff: _reconnecting={self._reconnecting}, _running={self._running}")
         if self._reconnecting:
-            print(f"[{self.__class__.__name__}] already reconnecting, returning")
             return
         self._reconnecting = True
 
         delay = self.RECONNECT_MIN
         try:
             while self._running:
-                print(f"[{self.__class__.__name__}] reconnect loop: _running={self._running}")
                 msg = f"[{self.__class__.__name__}] reconnecting in {delay:.1f}s..."
                 print(msg)
                 logger.info(msg)
                 await asyncio.sleep(delay)
-                print(f"[{self.__class__.__name__}] sleep done, attempting connect to {self.WS_URL}")
 
                 # 기존 태스크 정리
                 if self._ping_task and not self._ping_task.done():
@@ -289,29 +282,20 @@ class BaseWSClient(ABC):
                     self._recv_task.cancel()
 
                 try:
-                    print(f"[{self.__class__.__name__}] websockets.connect starting... (timeout={self.WS_CONNECT_TIMEOUT}s)")
-                    import time as _time
-                    _t0 = _time.time()
-                    try:
-                        self._ws = await asyncio.wait_for(
-                            websockets.connect(
-                                self.WS_URL,
-                                ping_interval=None,
-                                ping_timeout=None,
-                                close_timeout=5,
-                            ),
-                            timeout=self.WS_CONNECT_TIMEOUT,
-                        )
-                    except asyncio.TimeoutError:
-                        print(f"[{self.__class__.__name__}] websockets.connect TIMEOUT after {_time.time()-_t0:.2f}s")
-                        raise
-                    print(f"[{self.__class__.__name__}] websockets.connect done in {_time.time()-_t0:.2f}s, starting tasks...")
+                    self._ws = await asyncio.wait_for(
+                        websockets.connect(
+                            self.WS_URL,
+                            ping_interval=None,
+                            ping_timeout=None,
+                            close_timeout=5,
+                        ),
+                        timeout=self.WS_CONNECT_TIMEOUT,
+                    )
                     self._recv_task = asyncio.create_task(self._recv_loop())
                     if self.PING_INTERVAL is not None:
                         self._ping_task = asyncio.create_task(self._ping_loop())
 
                     # 재구독
-                    print(f"[{self.__class__.__name__}] calling _resubscribe...")
                     await self._resubscribe()
                     msg = f"[{self.__class__.__name__}] reconnected"
                     print(msg)
@@ -321,8 +305,6 @@ class BaseWSClient(ABC):
                     msg = f"[{self.__class__.__name__}] reconnect failed: {e}"
                     print(msg)
                     logger.error(msg)
-                    import traceback
-                    traceback.print_exc()
                     delay = min(self.RECONNECT_MAX, delay * 2.0) + random.uniform(0, 0.5)
         finally:
             self._reconnecting = False
