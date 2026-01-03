@@ -141,6 +141,14 @@ class PacificaWSClient(BaseWSClient):
         self._account_positions_subscribed = False
         self._account_orders_subscribed = False
 
+        # 이벤트 초기화 (새 데이터 대기할 수 있도록)
+        self._prices_event.clear()
+        self._account_info_event.clear()
+        self._positions_event.clear()
+        self._orders_event.clear()
+        for ev in self._orderbook_events.values():
+            ev.clear()
+
         # Public channels
         if was_prices:
             await self.subscribe_prices()

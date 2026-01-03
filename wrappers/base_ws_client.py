@@ -256,20 +256,26 @@ class BaseWSClient(ABC):
 
     async def _handle_disconnect(self) -> None:
         """연결 끊김 처리"""
+        print(f"[{self.__class__.__name__}] _handle_disconnect called, _running={self._running}, _reconnecting={self._reconnecting}")
         old_ws = self._ws
         self._ws = None
         await self._safe_close(old_ws)
+        print(f"[{self.__class__.__name__}] calling _reconnect_with_backoff...")
         await self._reconnect_with_backoff()
+        print(f"[{self.__class__.__name__}] _reconnect_with_backoff returned")
 
     async def _reconnect_with_backoff(self) -> None:
         """Exponential backoff으로 재연결"""
+        print(f"[{self.__class__.__name__}] _reconnect_with_backoff: _reconnecting={self._reconnecting}, _running={self._running}")
         if self._reconnecting:
+            print(f"[{self.__class__.__name__}] already reconnecting, returning")
             return
         self._reconnecting = True
 
         delay = self.RECONNECT_MIN
         try:
             while self._running:
+                print(f"[{self.__class__.__name__}] reconnect loop: _running={self._running}")
                 msg = f"[{self.__class__.__name__}] reconnecting in {delay:.1f}s..."
                 print(msg)
                 logger.info(msg)

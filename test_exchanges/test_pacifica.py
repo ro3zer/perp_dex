@@ -26,11 +26,16 @@ async def main():
     price = await pacifica.get_mark_price(symbol) # 강제 250ms 단위 fetch가 이루어짐.
     print(price)
     await asyncio.sleep(0.1)
+    
+    position = await pacifica.get_position(symbol)
+    print(position)
+    await asyncio.sleep(0.5)
+    return
 
     open_orders = await pacifica.get_open_orders(symbol)
     print(open_orders)
     await asyncio.sleep(0.5)
-    
+    return
     for order in open_orders:
         # cancel all orders
         res = await pacifica.cancel_orders(symbol, order)

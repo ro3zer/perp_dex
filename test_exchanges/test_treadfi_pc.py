@@ -35,10 +35,21 @@ async def main():
     print(f"Mark price: {price}")
     await asyncio.sleep(0.1)
 
-    print(f"\nFetching open orders...")
-    open_orders = await ex.get_open_orders(symbol)
-    print(f"Open orders: {open_orders}")
-    await asyncio.sleep(0.5)
+
+    while False:
+        # Get position (via Pacifica WS/REST)
+        print(f"\nFetching position...")
+        position = await ex.get_position(symbol)
+        print(f"Position: {position}")
+        await asyncio.sleep(0.01)
+    while True:
+        print(f"\nFetching position...")
+        position = await ex.get_position(symbol)
+        print(f"Position: {position}")
+        print(f"\nFetching open orders...")
+        open_orders = await ex.get_open_orders(symbol)
+        print(f"Open orders: {open_orders}")
+        await asyncio.sleep(0.01)
 
     # Cancel all orders (via TreadFi API)
 
