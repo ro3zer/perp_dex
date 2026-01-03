@@ -459,7 +459,7 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
             if pos.get("symbol") == symbol:
                 return {
                     "symbol": symbol,
-                    "side": "buy" if pos.get("side")=="bid" else "sell",
+                    "side": "long" if pos.get("side")=="bid" else "short",
                     "price": pos.get("entry_price"),
                     "size":pos.get("amount"),
                 }
