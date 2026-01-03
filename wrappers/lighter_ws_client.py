@@ -32,7 +32,7 @@ WS_URL_MAINNET = "wss://mainnet.zklighter.elliot.ai/stream"
 WS_CONNECT_TIMEOUT = 10
 RECONNECT_MIN = 0.5
 RECONNECT_MAX = 8.0
-FORCE_RECONNECT_INTERVAL = 60  # 강제 재연결 주기 (초)
+FORCE_RECONNECT_INTERVAL = 10  # 강제 재연결 주기 (초)
 
 
 class LighterWSClient(BaseWSClient):
@@ -319,6 +319,11 @@ class LighterWSClient(BaseWSClient):
                 self._positions.clear()
                 self._user_stats.clear()
                 self._assets.clear()
+
+                # 이벤트 초기화
+                self._market_stats_ready.clear()
+                self._user_stats_ready.clear()
+                self._account_all_ready.clear()
 
                 # Orderbook 초기화
                 for mid in list(self._orderbook_subs):
@@ -794,11 +799,11 @@ class LighterWSClient(BaseWSClient):
             return False
 
     async def wait_collateral_ready(self, timeout: float = 5.0) -> bool:
-        """담보 데이터 수신 대기"""
+        """담보 데이터 수신 대기 (user_stats 채널)"""
         if self._user_stats:
             return True
         try:
-            await asyncio.wait_for(self._account_all_ready.wait(), timeout=timeout)
+            await asyncio.wait_for(self._user_stats_ready.wait(), timeout=timeout)
             return True
         except asyncio.TimeoutError:
             return False
