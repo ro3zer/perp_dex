@@ -16,19 +16,23 @@ async def main():
 
     price = await backpack.get_mark_price(symbol)
     print(price)
-    price = await backpack.get_mark_price(symbol_spot)
-    print(price)
+    #price = await backpack.get_mark_price(symbol_spot)
+    #print(price)
 
     res = await backpack.get_orderbook(symbol)
     print(len(res.get('bids', [])), res.get('bids', [])[:10])
     print(len(res.get('asks', [])), res.get('asks', [])[:10])
 
-    return
+    
     coll = await backpack.get_collateral()
     print(coll)
 
+    position = await backpack.get_position(symbol)
+    print(position)
+    
     ods = await backpack.get_open_orders(symbol)
     print(ods)
+    return
 
     oid = []
     for od in ods:
@@ -36,8 +40,7 @@ async def main():
     res = await backpack.cancel_orders(symbol, oid)
     print(res)
     return 
-    position = await backpack.get_position(symbol)
-    print(position)
+    
 
     
     #print(symbol)

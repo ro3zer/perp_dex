@@ -49,7 +49,7 @@ EXCHANGES = {
         "key_module": "keys.pk_backpack",
         "key_name": "BACKPACK_KEY",
         "coin": "BTC",
-        "skip": ["collateral", "position"],  # WS is public streams only
+        "skip": ["collateral"],  # collateral is REST only, position/orders now via WS
     },
 }
 

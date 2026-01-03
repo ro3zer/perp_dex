@@ -21,7 +21,14 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
 
     async def init(self):
         await self.update_avaiable_symbols()
-        self._ws_client = await WS_POOL.acquire()
+        # Acquire authenticated WS client for private streams
+        self._ws_client = await WS_POOL.acquire(
+            api_key=self.API_KEY,
+            secret_key=self.PRIVATE_KEY
+        )
+        # Subscribe to position and order updates
+        await self._ws_client.subscribe_position()
+        await self._ws_client.subscribe_orders()
         return self
 
     async def update_avaiable_symbols(self):
@@ -283,6 +290,18 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
                 return self.parse_orders(await resp.json())
 
     async def get_position(self, symbol):
+        """Get position via WS (preferred) or REST fallback"""
+        # Try WS first
+        if self._ws_client:
+            pos = self._ws_client.get_position(symbol)
+            if pos is not None:
+                return pos
+
+        # Fallback to REST
+        return await self.get_position_rest(symbol)
+
+    async def get_position_rest(self, symbol):
+        """Get position via REST API"""
         timestamp = str(int(time.time() * 1000))
         window = "5000"
         instruction_type = "positionQuery"
@@ -448,11 +467,23 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
                 return self.parse_orders(await response.json())
     
     async def get_open_orders(self, symbol):
+        """Get open orders via WS (preferred) or REST fallback"""
+        # Try WS first
+        if self._ws_client:
+            orders = self._ws_client.get_open_orders(symbol)
+            if orders:
+                return orders
+
+        # Fallback to REST
+        return await self.get_open_orders_rest(symbol)
+
+    async def get_open_orders_rest(self, symbol):
+        """Get open orders via REST API"""
         async with aiohttp.ClientSession() as session:
             timestamp = str(int(time.time() * 1000))
             window = "5000"
             instruction_type = "orderQueryAll"
-            market_type = "PERP"  # 🔹 중요: PERP 마켓 지정
+            market_type = "PERP"  # PERP 마켓 지정
 
             params = {
                 "marketType": market_type,

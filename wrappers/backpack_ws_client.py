@@ -4,13 +4,17 @@ Backpack WebSocket Client
 Provides real-time data:
 - depth (orderbook) via incremental updates
 - markPrice (mark price, index price, funding rate)
+- account.positionUpdate (private, requires auth)
+- account.orderUpdate (private, requires auth)
 """
 import asyncio
+import base64
 import logging
 import time
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Dict, Any, Set, List
 
 import aiohttp
+import nacl.signing
 
 from wrappers.base_ws_client import BaseWSClient, _json_dumps
 
@@ -34,16 +38,24 @@ class BackpackWSClient(BaseWSClient):
     RECONNECT_MIN = 0.5
     RECONNECT_MAX = 30.0
 
-    def __init__(self):
+    def __init__(self, api_key: Optional[str] = None, secret_key: Optional[str] = None):
         super().__init__()
+
+        # Auth credentials (for private streams)
+        self._api_key = api_key
+        self._secret_key = secret_key
 
         # Subscriptions
         self._orderbook_subs: Set[str] = set()
         self._price_subs: Set[str] = set()
+        self._position_subscribed: bool = False
+        self._order_subscribed: bool = False
 
         # Cached data
         self._orderbooks: Dict[str, Dict[str, Any]] = {}
         self._prices: Dict[str, Dict[str, Any]] = {}
+        self._positions: Dict[str, Dict[str, Any]] = {}  # symbol -> position
+        self._open_orders: Dict[str, Dict[str, Any]] = {}  # order_id -> order
 
         # Track update IDs for delta validation
         self._orderbook_last_u: Dict[str, int] = {}
@@ -51,6 +63,8 @@ class BackpackWSClient(BaseWSClient):
         # Events for waiting
         self._orderbook_events: Dict[str, asyncio.Event] = {}
         self._price_events: Dict[str, asyncio.Event] = {}
+        self._position_event: asyncio.Event = asyncio.Event()
+        self._order_event: asyncio.Event = asyncio.Event()
 
         # Reconnect event (for _send to wait)
         self._reconnect_event: asyncio.Event = asyncio.Event()
@@ -77,6 +91,14 @@ class BackpackWSClient(BaseWSClient):
             symbol = payload.get("s")
             if symbol:
                 self._handle_mark_price_update(symbol, payload)
+
+        # account.positionUpdate stream
+        elif stream.startswith("account.positionUpdate"):
+            self._handle_position_update(payload)
+
+        # account.orderUpdate stream
+        elif stream.startswith("account.orderUpdate"):
+            self._handle_order_update(payload)
 
     async def _handle_depth_update(self, symbol: str, data: Dict[str, Any]) -> None:
         """
@@ -126,6 +148,111 @@ class BackpackWSClient(BaseWSClient):
         # Signal data ready
         if symbol in self._price_events:
             self._price_events[symbol].set()
+
+    def _handle_position_update(self, data: Dict[str, Any]) -> None:
+        """
+        Handle position update.
+        Format: {"e": "positionOpened", "s": "SOL_USDC_PERP", "q": 5, "B": 122, "P": "0", ...}
+        On subscription, initial positions are sent without "e" field.
+        """
+        symbol = data.get("s")
+        if not symbol:
+            return
+
+        event_type = data.get("e")  # positionOpened, positionAdjusted, positionClosed
+
+        if event_type == "positionClosed":
+            # Remove closed position
+            self._positions.pop(symbol, None)
+        else:
+            # Parse position
+            net_qty = data.get("q", 0)
+            try:
+                net_qty = float(net_qty)
+            except (ValueError, TypeError):
+                net_qty = 0
+
+            self._positions[symbol] = {
+                "symbol": symbol,
+                "side": "long" if net_qty > 0 else "short" if net_qty < 0 else None,
+                "size": str(abs(net_qty)),
+                "entry_price": data.get("B"),  # Entry price
+                "mark_price": data.get("M"),
+                "unrealized_pnl": data.get("P"),  # PnL unrealized
+                "realized_pnl": data.get("p"),  # PnL realized
+                "position_id": data.get("i"),
+                "time": int(time.time() * 1000),
+            }
+
+        self._position_event.set()
+
+    def _handle_order_update(self, data: Dict[str, Any]) -> None:
+        """
+        Handle order update.
+        Format: {"e": "orderAccepted", "s": "SOL_USD", "i": "order_id", "S": "Bid", "q": "100", "p": "20", ...}
+        """
+        event_type = data.get("e")
+        order_id = data.get("i")
+        if not order_id:
+            return
+
+        # Remove order on cancel/expire/fill
+        if event_type in ("orderCancelled", "orderExpired"):
+            self._open_orders.pop(order_id, None)
+        elif event_type == "orderFill":
+            # Check if fully filled
+            executed_qty = data.get("z", "0")
+            quantity = data.get("q", "0")
+            try:
+                if float(executed_qty) >= float(quantity):
+                    self._open_orders.pop(order_id, None)
+                else:
+                    # Partial fill - update order
+                    self._update_order(order_id, data)
+            except (ValueError, TypeError):
+                pass
+        else:
+            # orderAccepted, orderModified - add/update order
+            self._update_order(order_id, data)
+
+        self._order_event.set()
+
+    def _update_order(self, order_id: str, data: Dict[str, Any]) -> None:
+        """Update or create order in cache"""
+        side_raw = data.get("S", "")
+        side = "buy" if side_raw == "Bid" else "sell" if side_raw == "Ask" else side_raw
+
+        self._open_orders[order_id] = {
+            "id": order_id,
+            "symbol": data.get("s"),
+            "side": side,
+            "size": data.get("q"),
+            "price": data.get("p"),
+            "order_type": data.get("o"),
+            "status": data.get("X"),
+            "executed_qty": data.get("z"),
+            "time": int(time.time() * 1000),
+        }
+
+    def _generate_signature(self, instruction: str) -> str:
+        """Generate ED25519 signature for private stream subscription"""
+        if not self._secret_key:
+            raise ValueError("Secret key required for private streams")
+
+        private_key_bytes = base64.b64decode(self._secret_key)
+        signing_key = nacl.signing.SigningKey(private_key_bytes)
+        signature = signing_key.sign(instruction.encode())
+        return base64.b64encode(signature.signature).decode()
+
+    def _get_verifying_key(self) -> str:
+        """Get base64 encoded verifying (public) key from secret key"""
+        if not self._secret_key:
+            raise ValueError("Secret key required for private streams")
+
+        private_key_bytes = base64.b64decode(self._secret_key)
+        signing_key = nacl.signing.SigningKey(private_key_bytes)
+        verify_key = signing_key.verify_key
+        return base64.b64encode(bytes(verify_key)).decode()
 
     def _apply_depth_delta(self, symbol: str, data: Dict[str, Any]) -> None:
         """Apply incremental depth update to orderbook"""
@@ -248,12 +375,16 @@ class BackpackWSClient(BaseWSClient):
         self._orderbooks.clear()
         self._orderbook_last_u.clear()
         self._prices.clear()
+        self._positions.clear()
+        self._open_orders.clear()
 
         # Clear events
         for ev in self._orderbook_events.values():
             ev.clear()
         for ev in self._price_events.values():
             ev.clear()
+        self._position_event.clear()
+        self._order_event.clear()
 
         # Resubscribe to orderbook channels
         for symbol in self._orderbook_subs:
@@ -266,6 +397,13 @@ class BackpackWSClient(BaseWSClient):
         for symbol in self._price_subs:
             stream = f"markPrice.{symbol}"
             await self._ws.send(_json_dumps({"method": "SUBSCRIBE", "params": [stream]}))
+
+        # Resubscribe to private streams (if authenticated)
+        if self._position_subscribed and self._secret_key:
+            await self._subscribe_private_stream("account.positionUpdate")
+
+        if self._order_subscribed and self._secret_key:
+            await self._subscribe_private_stream("account.orderUpdate")
 
     def _build_ping_message(self) -> Optional[str]:
         """Backpack server sends ping, client responds with pong (handled by websockets lib)"""
@@ -282,6 +420,8 @@ class BackpackWSClient(BaseWSClient):
         await super().close()
         self._orderbook_subs.clear()
         self._price_subs.clear()
+        self._position_subscribed = False
+        self._order_subscribed = False
 
         # Close HTTP session
         if self._http_session and not self._http_session.closed:
@@ -367,6 +507,68 @@ class BackpackWSClient(BaseWSClient):
         # Clean up cached data
         self._prices.pop(symbol, None)
 
+    # ==================== Private Stream Subscriptions ====================
+
+    async def _subscribe_private_stream(self, stream: str) -> None:
+        """Subscribe to a private stream with authentication"""
+        if not self._secret_key:
+            raise ValueError("Secret key required for private streams")
+
+        timestamp = str(int(time.time() * 1000))
+        window = "5000"
+
+        # Generate signature
+        instruction = f"instruction=subscribe&timestamp={timestamp}&window={window}"
+        signature = self._generate_signature(instruction)
+        verifying_key = self._get_verifying_key()
+
+        msg = {
+            "method": "SUBSCRIBE",
+            "params": [stream],
+            "signature": [verifying_key, signature, timestamp, window]
+        }
+        await self._send_msg(msg)
+
+    async def subscribe_position(self) -> None:
+        """Subscribe to position updates (requires auth)"""
+        if self._position_subscribed:
+            return
+
+        if not self._secret_key:
+            raise ValueError("Secret key required for position subscription")
+
+        await self._subscribe_private_stream("account.positionUpdate")
+        self._position_subscribed = True
+
+    async def unsubscribe_position(self) -> None:
+        """Unsubscribe from position updates"""
+        if not self._position_subscribed:
+            return
+
+        await self._send_msg({"method": "UNSUBSCRIBE", "params": ["account.positionUpdate"]})
+        self._position_subscribed = False
+        self._positions.clear()
+
+    async def subscribe_orders(self) -> None:
+        """Subscribe to order updates (requires auth)"""
+        if self._order_subscribed:
+            return
+
+        if not self._secret_key:
+            raise ValueError("Secret key required for order subscription")
+
+        await self._subscribe_private_stream("account.orderUpdate")
+        self._order_subscribed = True
+
+    async def unsubscribe_orders(self) -> None:
+        """Unsubscribe from order updates"""
+        if not self._order_subscribed:
+            return
+
+        await self._send_msg({"method": "UNSUBSCRIBE", "params": ["account.orderUpdate"]})
+        self._order_subscribed = False
+        self._open_orders.clear()
+
     # ==================== Data Getters ====================
 
     def get_orderbook(self, symbol: str) -> Optional[Dict[str, Any]]:
@@ -383,6 +585,24 @@ class BackpackWSClient(BaseWSClient):
     def get_price_data(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get full cached price data for symbol (mark_price, index_price, funding_rate, etc)"""
         return self._prices.get(symbol)
+
+    def get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Get cached position for symbol"""
+        return self._positions.get(symbol)
+
+    def get_all_positions(self) -> Dict[str, Dict[str, Any]]:
+        """Get all cached positions"""
+        return self._positions.copy()
+
+    def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get cached open orders, optionally filtered by symbol"""
+        if symbol is None:
+            return list(self._open_orders.values())
+        return [o for o in self._open_orders.values() if o.get("symbol") == symbol]
+
+    def get_all_open_orders(self) -> Dict[str, Dict[str, Any]]:
+        """Get all cached open orders by order_id"""
+        return self._open_orders.copy()
 
     # ==================== Wait for data ====================
 
@@ -414,6 +634,28 @@ class BackpackWSClient(BaseWSClient):
         except asyncio.TimeoutError:
             return False
 
+    async def wait_position_ready(self, timeout: float = 5.0) -> bool:
+        """Wait until position data is available"""
+        if self._positions:
+            return True
+
+        try:
+            await asyncio.wait_for(self._position_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def wait_orders_ready(self, timeout: float = 5.0) -> bool:
+        """Wait until order data is available"""
+        if self._open_orders:
+            return True
+
+        try:
+            await asyncio.wait_for(self._order_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
 
 # ----------------------------
 # WebSocket Pool (Singleton)
@@ -422,29 +664,49 @@ class BackpackWSPool:
     """
     Singleton pool for Backpack WebSocket connections.
     Shares connections across multiple exchange instances.
+    Supports both public (unauthenticated) and private (authenticated) clients.
     """
 
     def __init__(self):
-        self._client: Optional[BackpackWSClient] = None
+        self._public_client: Optional[BackpackWSClient] = None
+        self._private_clients: Dict[str, BackpackWSClient] = {}  # api_key -> client
         self._lock = asyncio.Lock()
 
-    async def acquire(self) -> BackpackWSClient:
+    async def acquire(
+        self,
+        api_key: Optional[str] = None,
+        secret_key: Optional[str] = None,
+    ) -> BackpackWSClient:
         """
         Get or create a WebSocket client.
-        Backpack WS doesn't require auth for public streams,
-        so we can share a single connection.
+        - Without credentials: returns shared public client
+        - With credentials: returns client for that API key
         """
         async with self._lock:
-            if self._client is not None:
-                # Reconnect if needed
-                if not self._client._running:
-                    await self._client.connect()
-                return self._client
+            if api_key and secret_key:
+                # Authenticated client
+                if api_key in self._private_clients:
+                    client = self._private_clients[api_key]
+                    if not client._running:
+                        await client.connect()
+                    return client
 
-            # Create new client
-            self._client = BackpackWSClient()
-            await self._client.connect()
-            return self._client
+                # Create new authenticated client
+                client = BackpackWSClient(api_key=api_key, secret_key=secret_key)
+                await client.connect()
+                self._private_clients[api_key] = client
+                return client
+            else:
+                # Public client (shared)
+                if self._public_client is not None:
+                    if not self._public_client._running:
+                        await self._public_client.connect()
+                    return self._public_client
+
+                # Create new public client
+                self._public_client = BackpackWSClient()
+                await self._public_client.connect()
+                return self._public_client
 
     async def release(self) -> None:
         """Release client (does not close, just marks as available)"""
@@ -453,9 +715,13 @@ class BackpackWSPool:
     async def close_all(self) -> None:
         """Close all connections"""
         async with self._lock:
-            if self._client:
-                await self._client.close()
-                self._client = None
+            if self._public_client:
+                await self._public_client.close()
+                self._public_client = None
+
+            for client in self._private_clients.values():
+                await client.close()
+            self._private_clients.clear()
 
 
 # Global singleton
