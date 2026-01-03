@@ -562,7 +562,10 @@ class HLWSClientRaw(BaseWSClient):
         for ev in self._orderbook_events.values():
             ev.clear()
 
-        # 가격 이벤트 초기화
+        # 가격 캐시 초기화
+        self.prices.clear()
+        self.spot_prices.clear()
+        self.spot_pair_prices.clear()
         for ev in self._price_events.values():
             ev.clear()
 

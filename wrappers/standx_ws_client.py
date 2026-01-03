@@ -115,6 +115,8 @@ class StandXWSClient(BaseWSClient):
     async def _resubscribe(self) -> None:
         """Resubscribe to all channels after reconnect"""
         # 캐시된 데이터 초기화 (stale data 방지)
+        self._prices.clear()
+        self._orderbooks.clear()
         self._positions.clear()
         self._collateral = None
         self._authenticated = False

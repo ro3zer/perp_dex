@@ -142,6 +142,8 @@ class PacificaWSClient(BaseWSClient):
         self._account_orders_subscribed = False
 
         # 캐시된 데이터 초기화 (stale data 방지)
+        self._prices.clear()
+        self._orderbooks.clear()
         self._positions.clear()
         self._orders.clear()
         self._account_info = None
