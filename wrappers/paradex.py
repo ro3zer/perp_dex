@@ -110,7 +110,7 @@ class ParadexExchange(MultiPerpDexMixin, MultiPerpDex):
         }
     
     async def close(self):
-        return self.parse_orders(await self.exchange.close())
+        await self.exchange.close()
     
     async def get_open_orders(self, symbol):
         orders = await super().get_open_orders(symbol)

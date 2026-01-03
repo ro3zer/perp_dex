@@ -347,7 +347,11 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
     
     async def close_position(self, symbol, position):
         return await super().close_position(symbol, position)
-    
+
+    async def close(self):
+        """No persistent session to close"""
+        pass
+
     async def get_collateral(self):
         method = "GET"
         path = "/api/v1/private/account/getAccountAsset"

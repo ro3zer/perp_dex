@@ -83,6 +83,10 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
     async def close(self):
         if self._http and not self._http.closed:
             await self._http.close()
+        if self.ws_client:
+            from .pacifica_ws_client import PACIFICA_WS_POOL
+            await PACIFICA_WS_POOL.release(self.public_key)
+            self.ws_client = None
     
     def get_perp_quote(self, symbol, *, is_basic_coll=False):
         return 'USDC'

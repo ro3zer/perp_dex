@@ -173,8 +173,11 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
             return {"raw": text}
 
     async def close(self):
-        """Cleanup (no persistent session to close)"""
-        pass
+        """Cleanup - release WebSocket client"""
+        if self.ws_client:
+            from .standx_ws_client import WS_POOL
+            await WS_POOL.release(self.wallet_address)
+            self.ws_client = None
 
     # ----------------------------
     # Symbol Info

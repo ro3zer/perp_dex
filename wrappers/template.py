@@ -24,3 +24,6 @@ class Template(MultiPerpDexMixin,MultiPerpDex):
 
     async def get_mark_price(self,symbol):
         pass
+
+    async def close(self):
+        pass

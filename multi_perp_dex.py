@@ -81,6 +81,14 @@ class MultiPerpDex(ABC):
     async def get_available_symbols(self):
         pass
 
+    @abstractmethod
+    async def close(self):
+        """
+        Close exchange connections (HTTP sessions, WebSocket clients, etc.)
+        Must be called when done using the exchange to properly release resources.
+        """
+        pass
+
 class MultiPerpDexMixin:
     async def update_leverage(self, symbol, leverage):
         """Default implementation: does nothing and returns None."""

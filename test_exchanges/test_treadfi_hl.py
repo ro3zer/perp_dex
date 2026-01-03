@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from exchange_factory import create_exchange, symbol_create
 import asyncio
-from keys.pk_treadfi_hl import TREADFIHL_KEY
+from keys.pk_treadfi_hl import TREADFI_HL_KEY
 
 # note:
 # tread.fi it self can't close a position of small size
@@ -14,7 +14,7 @@ amount = 0.002
 
 
 async def main():
-    treadfi_hl = await create_exchange('treadfi.hyperliquid',TREADFIHL_KEY)
+    treadfi_hl = await create_exchange('treadfi.hyperliquid',TREADFI_HL_KEY)
     
     quote = treadfi_hl.get_perp_quote(coin)
     symbol = symbol_create('treadfi.hyperliquid', coin, quote=quote)

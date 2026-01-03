@@ -108,6 +108,10 @@ class TreadfiPcExchange(MultiPerpDexMixin, MultiPerpDex):
 	async def close(self):
 		if self._http and not self._http.closed:
 			await self._http.close()
+		if self.ws_client:
+			from .pacifica_ws_client import PACIFICA_WS_POOL
+			await PACIFICA_WS_POOL.release(self.pacifica_public_key or "public")
+			self.ws_client = None
 
 	# ----------------------------
 	# Initialization
