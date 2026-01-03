@@ -68,7 +68,6 @@ async def create_exchange(exchange_platform: str, key_params=None):  # [MODIFIED
             key_params.login_wallet_private_key,
             key_params.trading_wallet_address,
             key_params.account_name,
-            key_params.fetch_by_ws,
             getattr(key_params,'trading_wallet_private_key',None),
             key_params.options if hasattr(key_params,"options") else None
             ).init()
@@ -80,7 +79,6 @@ async def create_exchange(exchange_platform: str, key_params=None):  # [MODIFIED
             login_wallet_private_key=getattr(key_params, 'login_wallet_private_key', None),
             account_name=key_params.account_name,
             pacifica_public_key=getattr(key_params, 'pacifica_public_key', None),
-            fetch_by_ws=getattr(key_params, 'fetch_by_ws', True),
             ).init()
 
     elif exchange_platform == "variational":
@@ -107,7 +105,6 @@ async def create_exchange(exchange_platform: str, key_params=None):  # [MODIFIED
             vault_address = key_params.vault_address,
             builder_code = key_params.builder_code,
             builder_fee_pair = key_params.builder_fee_pair,
-            fetch_by_ws = key_params.fetch_by_ws,
             FrontendMarket = key_params.FrontendMarket
         ).init()
     
@@ -116,7 +113,6 @@ async def create_exchange(exchange_platform: str, key_params=None):  # [MODIFIED
             wallet_address = key_params.wallet_address,
             api_key = key_params.api_key,
             vault_address = key_params.vault_address,
-            fetch_by_ws = key_params.fetch_by_ws,
             builder_fee_pair = key_params.builder_fee_pair,
             FrontendMarket = key_params.FrontendMarket
         ).init()
