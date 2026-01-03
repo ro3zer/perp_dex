@@ -28,6 +28,7 @@ class StandXWSClient(BaseWSClient):
 
     WS_URL = STANDX_WS_URL
     PING_INTERVAL = None  # StandX는 ping 사용 안 함
+    RECV_TIMEOUT = 60.0  # 60초간 메시지 없으면 재연결
     RECONNECT_MIN = 0.2
     RECONNECT_MAX = 30.0
 

@@ -50,6 +50,8 @@ class BaseWSClient(ABC):
     WS_URL: str = ""
     WS_CONNECT_TIMEOUT: float = 10.0
     PING_INTERVAL: Optional[float] = None  # None이면 ping 안 함
+    PING_FAIL_THRESHOLD: int = 2  # ping 연속 실패 시 재연결
+    RECV_TIMEOUT: Optional[float] = None  # 수신 타임아웃 (ping 없는 경우 사용)
     RECONNECT_MIN: float = 1.0
     RECONNECT_MAX: float = 8.0
     CLOSE_TIMEOUT: float = 2.0
@@ -62,6 +64,8 @@ class BaseWSClient(ABC):
         self._ping_task: Optional[asyncio.Task] = None
         self._lock: asyncio.Lock = asyncio.Lock()
         self._reconnecting: bool = False
+        self._ping_fail_count: int = 0
+        self._last_recv_time: float = 0.0
 
     @property
     def connected(self) -> bool:
@@ -180,30 +184,48 @@ class BaseWSClient(ABC):
 
     async def _recv_loop(self) -> None:
         """메시지 수신 루프"""
+        import time
+        self._last_recv_time = time.time()
+
         while self._running:
             if not self._ws:
                 await asyncio.sleep(0.1)
                 continue
             try:
-                msg = await self._ws.recv()
+                # 수신 타임아웃 적용 (ping 없는 경우 연결 체크용)
+                if self.RECV_TIMEOUT:
+                    msg = await asyncio.wait_for(self._ws.recv(), timeout=self.RECV_TIMEOUT)
+                else:
+                    msg = await self._ws.recv()
+
+                self._last_recv_time = time.time()
+                self._ping_fail_count = 0  # 메시지 수신 시 ping 실패 카운트 리셋
                 data = json.loads(msg)
                 await self._handle_message(data)
+
+            except asyncio.TimeoutError:
+                # 수신 타임아웃 - 연결 죽은 것으로 간주
+                log_msg = f"[{self.__class__.__name__}] recv timeout, reconnecting..."
+                print(log_msg)
+                logger.warning(log_msg)
+                await self._handle_disconnect()
+                break
             except ConnectionClosed as e:
-                msg = f"[{self.__class__.__name__}] connection closed (code={e.code}), reconnecting..."
-                print(msg)
-                logger.warning(msg)
+                log_msg = f"[{self.__class__.__name__}] connection closed (code={e.code}), reconnecting..."
+                print(log_msg)
+                logger.warning(log_msg)
                 await self._handle_disconnect()
                 break
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                msg = f"[{self.__class__.__name__}] recv error: {e}"
-                print(msg)
-                logger.error(msg)
+                log_msg = f"[{self.__class__.__name__}] recv error: {e}"
+                print(log_msg)
+                logger.error(log_msg)
                 await asyncio.sleep(0.1)
 
     async def _ping_loop(self) -> None:
-        """주기적 ping 전송"""
+        """주기적 ping 전송 (연속 실패 시 재연결)"""
         if self.PING_INTERVAL is None:
             return
 
@@ -215,10 +237,20 @@ class BaseWSClient(ABC):
                     if ping_msg:
                         try:
                             await self._ws.send(ping_msg)
+                            # ping 성공 시 카운트 리셋 (pong 응답은 recv_loop에서 처리)
                         except Exception as e:
-                            msg = f"[{self.__class__.__name__}] ping failed: {e}"
-                            print(msg)
-                            logger.warning(msg)
+                            self._ping_fail_count += 1
+                            log_msg = f"[{self.__class__.__name__}] ping failed ({self._ping_fail_count}/{self.PING_FAIL_THRESHOLD}): {e}"
+                            print(log_msg)
+                            logger.warning(log_msg)
+
+                            if self._ping_fail_count >= self.PING_FAIL_THRESHOLD:
+                                log_msg = f"[{self.__class__.__name__}] ping failed {self.PING_FAIL_THRESHOLD} times, reconnecting..."
+                                print(log_msg)
+                                logger.warning(log_msg)
+                                self._ping_fail_count = 0
+                                await self._handle_disconnect()
+                                return  # 이 태스크는 종료, 재연결 시 새로 생성됨
         except asyncio.CancelledError:
             pass
 
