@@ -35,7 +35,7 @@ class PacificaWSClient(BaseWSClient):
     """
 
     WS_URL = PACIFICA_WS_URL
-    PING_INTERVAL = None  # recv timeout만 사용
+    PING_INTERVAL = 50.0  # 50초마다 ping (서버 timeout 60초)
     RECV_TIMEOUT = 60.0  # 60초간 메시지 없으면 재연결
     RECONNECT_MIN = 1.0
     RECONNECT_MAX = 8.0
@@ -128,13 +128,16 @@ class PacificaWSClient(BaseWSClient):
 
     async def _resubscribe(self) -> None:
         """Resubscribe to all channels after reconnect"""
-        # 구독 상태 플래그 초기화 (재구독 허용)
+        print("[PacificaWS] _resubscribe called")
+
+        # 구독 상태 플래그 저장
         was_prices = self._prices_subscribed
         was_orderbook_subs = set(self._orderbook_subs)
         was_account_info = self._account_info_subscribed
         was_account_positions = self._account_positions_subscribed
         was_account_orders = self._account_orders_subscribed
 
+        # 구독 플래그 초기화 (재구독 허용)
         self._prices_subscribed = False
         self._orderbook_subs.clear()
         self._account_info_subscribed = False
@@ -159,17 +162,24 @@ class PacificaWSClient(BaseWSClient):
         # Public channels
         if was_prices:
             await self.subscribe_prices()
+            print("[PacificaWS] Resubscribed to prices")
         for symbol in was_orderbook_subs:
             await self.subscribe_orderbook(symbol)
+            print(f"[PacificaWS] Resubscribed to orderbook: {symbol}")
 
         # Private channels
         if self.public_key:
             if was_account_info:
                 await self.subscribe_account_info(self.public_key)
+                print("[PacificaWS] Resubscribed to account_info")
             if was_account_positions:
                 await self.subscribe_account_positions(self.public_key)
+                print("[PacificaWS] Resubscribed to account_positions")
             if was_account_orders:
                 await self.subscribe_account_orders(self.public_key)
+                print("[PacificaWS] Resubscribed to account_orders")
+
+        print("[PacificaWS] _resubscribe completed")
 
     def _build_ping_message(self) -> Optional[str]:
         """Build ping message for Pacifica"""
@@ -277,6 +287,7 @@ class PacificaWSClient(BaseWSClient):
         Handle account_positions data.
         Format: [{s, d, a, p, m, f, i, l, t}, ...]
         """
+        print(f"[PacificaWS] _handle_positions received {len(items)} items")
         # Clear existing positions and rebuild from snapshot
         self._positions.clear()
 
@@ -314,6 +325,7 @@ class PacificaWSClient(BaseWSClient):
         Handle account_orders data.
         Format: [{i, I, s, d, p, a, f, c, t, st, ot, sp, ro}, ...]
         """
+        print(f"[PacificaWS] _handle_orders received {len(items)} items")
         parsed = []
         for item in items:
             if not isinstance(item, dict):
