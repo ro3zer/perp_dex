@@ -72,6 +72,7 @@ class BaseWSClient(ABC):
         self._ping_fail_count: int = 0
         self._last_recv_time: float = 0.0
         self._proxy: Optional[str] = proxy  # HTTP proxy URL (e.g., "http://user:pass@host:port")
+        self._extra_headers: Dict[str, str] = {}  # Custom headers for WS connection
 
     @property
     def connected(self) -> bool:
@@ -174,6 +175,7 @@ class BaseWSClient(ABC):
                             ping_interval=None,
                             ping_timeout=None,
                             close_timeout=5,
+                            extra_headers=self._extra_headers or None,
                         ),
                         timeout=self.WS_CONNECT_TIMEOUT,
                     )
@@ -185,6 +187,7 @@ class BaseWSClient(ABC):
                             ping_interval=None,  # 자체 ping 사용
                             ping_timeout=None,
                             close_timeout=5,
+                            extra_headers=self._extra_headers or None,
                         ),
                         timeout=self.WS_CONNECT_TIMEOUT,
                     )
@@ -381,6 +384,7 @@ class BaseWSClient(ABC):
                     ping_interval=None,
                     ping_timeout=None,
                     close_timeout=5,
+                    extra_headers=self._extra_headers or None,
                 ),
                 timeout=self.WS_CONNECT_TIMEOUT,
             )

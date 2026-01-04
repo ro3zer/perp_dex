@@ -10,7 +10,6 @@ References:
 - Private WS: /api/v1/private/ws
 """
 import asyncio
-import json
 import logging
 import time
 from typing import Optional, Dict, Any, List, Set
@@ -294,10 +293,8 @@ class EdgeXPrivateWSClient(BaseWSClient):
     """
     EdgeX Private WebSocket 클라이언트.
     - 인증 후 자동 푸시: position, collateral, open_orders
-    - Uses aiohttp for custom Sec-WebSocket-Protocol header support
     """
 
-    WS_URL = EDGEX_PRIVATE_WS_URL
     PING_INTERVAL = None
     RECV_TIMEOUT = 60.0
     RECONNECT_MIN = 1.0
@@ -309,8 +306,14 @@ class EdgeXPrivateWSClient(BaseWSClient):
         self.signature = signature
         self.timestamp = timestamp
 
-        # aiohttp session
-        self._aiohttp_session = None
+        # Set URL with accountId query param
+        self.WS_URL = f"{EDGEX_PRIVATE_WS_URL}?accountId={account_id}"
+
+        # Set auth headers
+        self._extra_headers = {
+            "X-edgeX-Api-Timestamp": timestamp,
+            "X-edgeX-Api-Signature": signature,
+        }
 
         # Cached data
         self._positions: Dict[str, Dict[str, Any]] = {}  # contractId -> position
@@ -325,62 +328,6 @@ class EdgeXPrivateWSClient(BaseWSClient):
         # Auth state
         self._snapshot_received: bool = False
 
-    async def connect(self) -> bool:
-        """Override connect to add auth headers"""
-        return await self._connect_with_auth()
-
-    async def _connect_with_auth(self) -> bool:
-        """Connect with authentication using aiohttp (SDK style headers)"""
-        import aiohttp
-
-        async with self._lock:
-            if self._ws is not None and self._running:
-                return True
-
-        base_delay = 0.5
-
-        for attempt in range(1, self.CONNECT_MAX_ATTEMPTS + 1):
-            try:
-                # SDK style: URL has ?accountId, headers have timestamp/signature
-                ws_url = f"{self.WS_URL}?accountId={self.account_id}"
-                headers = {
-                    "X-edgeX-Api-Timestamp": self.timestamp,
-                    "X-edgeX-Api-Signature": self.signature,
-                }
-
-                self._aiohttp_session = aiohttp.ClientSession()
-                self._ws = await asyncio.wait_for(
-                    self._aiohttp_session.ws_connect(
-                        ws_url,
-                        headers=headers,
-                        heartbeat=None,
-                    ),
-                    timeout=self.WS_CONNECT_TIMEOUT,
-                )
-                self._running = True
-                self._recv_task = asyncio.create_task(self._recv_loop())
-                print(f"{self._log_prefix} connected")
-                return True
-
-            except aiohttp.WSServerHandshakeError as e:
-                print(f"{self._log_prefix} connect failed (HTTP {e.status}): {e.message}")
-                if e.status == 429:
-                    sleep_for = base_delay * (2 ** (attempt - 1))
-                    print(f"{self._log_prefix} 429 rate limit, retry in {sleep_for:.1f}s")
-                    await asyncio.sleep(sleep_for)
-                else:
-                    return False
-
-            except asyncio.TimeoutError:
-                print(f"{self._log_prefix} connect timeout (attempt {attempt})")
-                await asyncio.sleep(base_delay)
-
-            except Exception as e:
-                print(f"{self._log_prefix} connect failed: {e}")
-                return False
-
-        return False
-
     def _build_ping_message(self) -> Optional[str]:
         return None
 
@@ -388,11 +335,11 @@ class EdgeXPrivateWSClient(BaseWSClient):
         """Handle incoming WebSocket message"""
         msg_type = data.get("type")
 
-        # Server ping -> respond with pong (aiohttp uses send_str)
+        # Server ping -> respond with pong
         if msg_type == "ping":
             pong_msg = {"type": "pong", "time": data.get("time", str(int(time.time() * 1000)))}
             if self._ws:
-                await self._ws.send_str(_json_dumps(pong_msg))
+                await self._ws.send(_json_dumps(pong_msg))
             return
 
         # Error
@@ -534,70 +481,6 @@ class EdgeXPrivateWSClient(BaseWSClient):
         self._position_event.clear()
         self._collateral_event.clear()
         self._orders_event.clear()
-
-    async def _do_reconnect(self) -> bool:
-        """Override to use auth connect"""
-        old_ws = self._ws
-        self._ws = None
-        await self._safe_close(old_ws)
-
-        if await self._connect_with_auth():
-            await self._resubscribe()
-            return True
-        return False
-
-    async def _recv_loop(self) -> None:
-        """Override recv loop for aiohttp WebSocket API"""
-        import aiohttp
-
-        while self._running and self._ws:
-            try:
-                msg = await asyncio.wait_for(
-                    self._ws.receive(),
-                    timeout=self.RECV_TIMEOUT
-                )
-
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    await self._handle_message(data)
-                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    print(f"{self._log_prefix} connection closed")
-                    break
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    print(f"{self._log_prefix} ws error: {self._ws.exception()}")
-                    break
-
-            except asyncio.TimeoutError:
-                # No message received, continue
-                continue
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"{self._log_prefix} recv error: {type(e).__name__}: {e}")
-                break
-
-        # Connection lost, try reconnect
-        if self._running:
-            await self._reconnect_with_backoff()
-
-    async def close(self) -> None:
-        """Override close for aiohttp"""
-        self._running = False
-        if self._recv_task:
-            self._recv_task.cancel()
-            try:
-                await self._recv_task
-            except asyncio.CancelledError:
-                pass
-            self._recv_task = None
-
-        if self._ws:
-            await self._ws.close()
-            self._ws = None
-
-        if self._aiohttp_session:
-            await self._aiohttp_session.close()
-            self._aiohttp_session = None
 
     # ==================== Public API ====================
 
