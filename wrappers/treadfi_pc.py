@@ -694,7 +694,7 @@ alert('Signing/Submit failed: ' + e.message);
 		return {
 			"symbol": pos.get("symbol"),
 			"side": side,
-			"price": pos.get("entry_price"),
+			"entry_price": pos.get("entry_price"),
 			"size": amount,
 			"liquidation_price": pos.get("liquidation_price"),
 		}

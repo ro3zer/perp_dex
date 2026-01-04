@@ -26,6 +26,12 @@ class MultiPerpDex(ABC):
 
     @abstractmethod
     async def get_position(self, symbol):
+        """
+        side: long / short
+        size:
+        entry_price:
+        unrealized_pnl:
+        """
         pass
     
     @abstractmethod

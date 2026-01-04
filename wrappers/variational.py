@@ -158,7 +158,6 @@ def _extract_position_for_coin(positions, coin: str) -> Optional[dict]:
 
     sym = (coin or "").upper()
     items = positions if isinstance(positions, list) else [positions]
-
     for p in items:
         try:
             info = (p.get("position_info") or {})
@@ -167,11 +166,14 @@ def _extract_position_for_coin(positions, coin: str) -> Optional[dict]:
                 continue
             qty = _fnum(info.get("qty"))
             side = "long" if (qty or 0) > 0 else ("short" if (qty or 0) < 0 else "flat")
+            unrealized_pnl = p.get("upnl",0)
             return {
                 "coin": inst.get("underlying"),
                 "side": side,
                 "size": str(abs(qty)) if qty is not None else None,
-                "avg_entry_price": _fnum(info.get("avg_entry_price")),
+                "entry_price": _fnum(info.get("avg_entry_price")),
+                "unrealized_pnl": unrealized_pnl,
+                "raw_data":p
             }
         except Exception:
             continue

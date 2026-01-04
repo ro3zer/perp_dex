@@ -35,7 +35,7 @@ async def main():
         print(res)
         return 
     await asyncio.sleep(0.5)
-
+    await variational.close()
     return
     
     price = await variational.get_mark_price(symbol) # 강제 250ms 단위 fetch가 이루어짐.
