@@ -221,32 +221,6 @@ def _extract_open_orders_core(payload, coin: str = "all") -> List[dict]:
             )
     return out
 
-
-# 지원 자산 심볼 추출
-def _extract_asset_list(data) -> List[str]:
-    if isinstance(data, str):
-        data = json.loads(data)
-    if not isinstance(data, dict):
-        return []
-    symbols = set()
-    for top_key, items in data.items():
-        if not isinstance(items, list) or len(items) == 0:
-            if isinstance(top_key, str) and top_key:
-                symbols.add(top_key)
-            continue
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            # has_perp=True 그리고 close-only 제외
-            if not bool(it.get("has_perp", False)):
-                continue
-            if bool(it.get("is_close_only_mode", False)):
-                continue
-            sym = it.get("asset") or top_key
-            if isinstance(sym, str) and sym:
-                symbols.add(sym)
-    return sorted(symbols)
-
 class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
     def __init__(
         self,
@@ -258,12 +232,13 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
         super().__init__()
         if not evm_wallet_address:
             raise ValueError("evm_wallet_address is required")
+        self.is_rfq = True
         self.address = to_checksum_address(evm_wallet_address)
         self._pk = evm_private_key
         self.options = options or {}
         self.options.setdefault("probe_qty", "0.0001") # any qty is ok
         self.options.setdefault("max_slippage", 0.01)  # 1%
-        self.options.setdefault("min_price_refresh_ms", 250)  # 최소 
+        self.options.setdefault("min_price_refresh_ms", 500)  # 최소 
         self.options.setdefault("auto_login_on_demand", True)  # 자동 로그인 허용 플래그
         self.options.setdefault("funding_interval_s", 3600) # 3600 으로 강제됨, 처음 받는 response와 달리 항시 3600
         self._impersonate = self.options.get("impersonate", "chrome")
@@ -479,12 +454,15 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
         now_ms = int(time.monotonic() * 1000)
         entry = {
             "instrument": inst,
+            "bid":core.get('bid'),
+            "ask":core.get('ask'),
             "quote_id": core.get("quote_id"),
             "mark_price": core.get("mark_price"),
             "qty": core.get("qty"),
             "funding_interval_s": inst.get("funding_interval_s"),
             "last_price_at_ms": now_ms,
         }
+        
         self._rt_cache[coin.upper()] = entry
 
     def _get_cached_instrument(self, coin: str, funding_interval_s: Optional[int] = None) -> Optional[dict]:
@@ -532,6 +510,7 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
 
         # 3) 시드 캐시 구성
         self._asset_list = []
+        self.available_symbols["perp"] = []
         now_ms = int(time.monotonic() * 1000)
         for sym, items in data.items():
             if not isinstance(items, list) or not items:
@@ -543,7 +522,7 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
                 continue
             if it.get("is_close_only_mode", False):
                 continue
-
+            
             coin = str(it.get("asset") or sym).upper()
             
             # 현재는 3600으로 강제하고 있음
@@ -567,6 +546,7 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
                 "last_price_at_ms": now_ms,
             }
             self._asset_list.append(coin)
+            self.available_symbols["perp"].append(coin)
 
         self._asset_list.sort()
         self._initialized = True
@@ -685,8 +665,6 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
         if cached and last_ms and (now_ms - last_ms) < thresh_ms:
             return cached.get("mark_price")
 
-        
-        
         probe_qty = self.options.get("probe_qty", "0.0001")
         funding = int((cached or {}).get("funding_interval_s") or self.options.get("funding_interval_s", 3600))
 
@@ -814,6 +792,63 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
 
     async def get_mark_price(self, symbol):
         return await self.fetch_price(symbol)
+
+    async def get_orderbook(self, symbol, *, qty=None) -> Optional[Dict[str, Any]]:
+        """
+        RFQ 방식이라 실제 orderbook이 없음.
+        indicative quote의 bid/ask를 단일 레벨로 반환.
+
+        Returns:
+            {
+                "bids": [[price, qty]],  # 단일 레벨이지만 list로 감싸서 일관성 유지
+                "asks": [[price, qty]],
+                "time": timestamp_ms,
+                "msg": "RFQ 방식 안내 메시지"
+            }
+        """
+        await self.initialize_if_needed()
+        coin = str(symbol).upper()
+
+        # 캐시 확인 (min_price_refresh_ms 이내면 캐시 사용)
+        cached = self._rt_cache.get(coin)
+        now_ms = int(time.monotonic() * 1000)
+        thresh_ms = int(self.options.get("min_price_refresh_ms", 250))
+        last_ms = int((cached or {}).get("last_price_at_ms") or 0)
+
+        # bid/ask가 없으면 (초기 캐시는 mark_price만 있음) fetch 필요
+        has_bid_ask = cached and cached.get("bid") is not None and cached.get("ask") is not None
+        if not cached or not has_bid_ask or (now_ms - last_ms) >= thresh_ms:
+            # 캐시 없거나 만료 → 새로 fetch
+            if qty:
+                qty = str(qty)
+
+            qty_str = qty or self.options.get("probe_qty", "0.0001")
+
+            # qty가 probe_qty와 다르면 업데이트
+            if qty and qty_str != self.options.get("probe_qty"):
+                self.options["probe_qty"] = qty_str
+
+            funding = int((cached or {}).get("funding_interval_s") or self.options.get("funding_interval_s", 3600))
+            await self._fetch_indicative_quote(coin=coin, qty=qty_str, funding_interval_s=funding)
+            cached = self._rt_cache.get(coin)
+
+        if not cached:
+            return None
+
+        bid = cached.get("bid")
+        ask = cached.get("ask")
+        qty = float(cached.get("qty") or self.options.get("probe_qty", "0.0001"))
+
+        return {
+            "bids": [[bid, qty]] if bid else [],
+            "asks": [[ask, qty]] if ask else [],
+            "time": int(time.time() * 1000),
+            "msg": "RFQ 방식: 실제 orderbook이 아닌 indicative quote 기반 단일 레벨. 수량에 따라 가격이 달라질 수 있음.",
+        }
+
+    async def unsubscribe_orderbook(self, symbol) -> None:
+        """RFQ 방식은 WS가 아니라 구독 취소할 것이 없음"""
+        print(f"[Variational] unsubscribe_orderbook({symbol}): REST API 기반 RFQ 방식이라 구독 취소할 것이 없습니다.")
 
     async def supported_assets(self) -> List[str]:
         await self.initialize_if_needed()

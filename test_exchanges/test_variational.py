@@ -11,17 +11,30 @@ symbol = symbol_create('variational',coin) # only perp atm
 
 async def main():
     variational = await create_exchange('variational',VARIATIONAL_KEY)
-
+    res = await variational.get_available_symbols()
+    print(res)
+    await variational.close()
+    #return
     #res = await variational.initialize() # login and initialize
     #print(res.get('ok'))
     #await asyncio.sleep(0.5)
-    price = await variational.get_mark_price(symbol) # 강제 250ms 단위 fetch가 이루어짐.
-    print(price)
-    return
+    while True:
+        for sym in res['perp']:
+            price = await variational.get_mark_price(sym) # 강제 250ms 단위 fetch가 이루어짐.
+            print(sym, price)
+        return
+
+        book = await variational.get_orderbook(symbol, qty=1.0)
+        print(book)
+        
+        
+        await asyncio.sleep(0.5)
+    
     
     coll = await variational.get_collateral()
     print(coll)
     await asyncio.sleep(0.5)
+    return
 
     position = await variational.get_position(symbol)
     print(position)
