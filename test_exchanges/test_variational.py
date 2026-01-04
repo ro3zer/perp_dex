@@ -19,13 +19,14 @@ async def main():
     #print(res.get('ok'))
     #await asyncio.sleep(0.5)
     while True:
-        for sym in res['perp']:
-            price = await variational.get_mark_price(sym) # 강제 250ms 단위 fetch가 이루어짐.
-            print(sym, price)
-        return
+        #for sym in res['perp']:
+        #    price = await variational.get_mark_price(sym) # 강제 250ms 단위 fetch가 이루어짐.
+        #    print(sym, price)
+        #return
 
-        book = await variational.get_orderbook(symbol, qty=1.0)
+        book = await variational.get_orderbook(symbol)
         print(book)
+        return
         
         
         await asyncio.sleep(0.5)

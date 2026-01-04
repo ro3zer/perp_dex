@@ -13,14 +13,40 @@
 - Edgex (직접 서명 구현)
 - Backpack (공식 REST)
 - TreadFi (프론트 api 사용) / login, logout, create_order 가능
-- Variational (프론트 api 사용)
+- Variational (프론트 api 사용, RFQ 방식)
 - Pacifica (공식 api)
 - Hyperliquid (공식 api)
   - price / position 조회: 웹소켓사용, 여러 instance를 만들어도 WS_POOL 공통모듈로 통신
-  - 주문: rest api
+  - 주문: WS 또는 REST
 - Superstack
   - hyperliquid 이지만, 주문관련 endpoint는 superstack wallet api로 생성
   - price / position 조회: Hyperliquid WS_POOL 공통모듈 사용
+- StandX (WS 지원)
+
+---
+
+## WebSocket 지원 현황
+
+각 거래소별 WebSocket 지원 기능입니다. ✅ = WS 지원, ❌ = REST only, 🔄 = RFQ 방식
+
+| 거래소 | mark_price | orderbook | position | collateral | open_orders | create_order | cancel_orders | 비고 |
+|--------|:----------:|:---------:|:--------:|:----------:|:-----------:|:------------:|:-------------:|------|
+| **Hyperliquid** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | WS Pool 공유 |
+| **Superstack** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | HL WS Pool 사용 |
+| **Pacifica** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | WS Pool 공유 |
+| **TreadFi** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | Pacifica WS 사용 |
+| **Lighter** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | WS Pool 공유 |
+| **EdgeX** | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | Public/Private WS |
+| **Backpack** | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | WS Pool 공유 |
+| **StandX** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | 서버 미지원 항목 있음 |
+| **Variational** | 🔄 | 🔄 | ❌ | ❌ | ❌ | ❌ | ❌ | RFQ 방식 (WS 없음) |
+| **GRVT** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | REST only |
+| **Paradex** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | REST only (CCXT) |
+
+### 참고
+- **WS Pool**: 여러 인스턴스가 동일한 WebSocket 연결을 공유하여 효율적으로 사용
+- **RFQ (Request for Quote)**: Variational은 수량에 따라 가격이 결정되는 RFQ 방식으로, `get_orderbook`이 indicative quote 기반 단일 레벨을 반환
+- **prefer_ws**: 대부분의 거래소에서 `prefer_ws=True`가 기본값이며, WS 실패 시 REST로 자동 폴백
 
 ---
 
