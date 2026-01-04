@@ -451,6 +451,8 @@ class PacificaExchange(MultiPerpDexMixin, MultiPerpDex):
             "liquidation_price": pos.get("liquidation_price"),
             "margin": pos.get("margin"),
             "funding_fee": pos.get("funding_fee"),
+            "unrealized_pnl":None, # not supported, calcuate using price, and entry_price
+            "raw_data":pos
         }
 
     async def get_position_rest(self, symbol):

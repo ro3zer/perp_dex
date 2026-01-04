@@ -20,6 +20,10 @@ async def main():
     print(coll)
     await asyncio.sleep(0.1)
 
+    position = await pacifica.get_position(symbol)
+    print(position)
+    return
+
     #available_symbols = pacifica.available_symbols.get('perp',[])
     #print(available_symbols)
 
