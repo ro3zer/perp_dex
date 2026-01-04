@@ -370,3 +370,383 @@ python test_exchanges/test_variational.py
 ## 라이선스
 
 MIT
+
+---
+---
+
+# English Version
+
+---
+
+# mpdex: Multi Perp DEX Async Unified Wrapper
+
+A Python async wrapper for using multiple perpetual derivative exchanges (Paradex, Edgex, Lighter, GRVT, Backpack, etc.) through a single unified interface.
+Provides exchange-specific implementations following a core interface, along with a factory function (`create_exchange`) and symbol helper (`symbol_create`) for one-line instance creation.
+
+---
+
+## Supported Exchanges
+
+- Lighter (lighter-sdk)
+- GRVT (grvt-pysdk)
+- Paradex (ccxt.async_support.paradex)
+- Edgex (custom signature implementation)
+- Backpack (official REST)
+- TreadFi (frontend API) / login, logout, create_order supported
+- Variational (frontend API, RFQ style)
+- Pacifica (official API)
+- Hyperliquid (official API)
+  - price / position queries: WebSocket, multiple instances share WS_POOL common module
+  - orders: WS or REST
+- Superstack
+  - Based on Hyperliquid, but order endpoints use Superstack wallet API
+  - price / position queries: Uses Hyperliquid WS_POOL common module
+- StandX (WS supported)
+
+---
+
+## WebSocket Support Status
+
+WebSocket support by exchange. ✅ = WS supported, ❌ = REST only, 🔄 = RFQ style
+
+| Exchange | mark_price | orderbook | position | collateral | open_orders | create_order | cancel_orders | Notes |
+|----------|:----------:|:---------:|:--------:|:----------:|:-----------:|:------------:|:-------------:|-------|
+| **Hyperliquid** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Shared WS Pool |
+| **Superstack** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Uses HL WS Pool |
+| **Pacifica** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Shared WS Pool |
+| **TreadFi** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | Uses Pacifica WS |
+| **Lighter** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | Shared WS Pool |
+| **EdgeX** | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | Public/Private WS |
+| **Backpack** | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | Shared WS Pool |
+| **StandX** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Some server-side unsupported |
+| **Variational** | 🔄 | 🔄 | ❌ | ❌ | ❌ | ❌ | ❌ | RFQ style (no WS) |
+| **GRVT** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | REST only |
+| **Paradex** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | REST only (CCXT) |
+
+### Notes
+- **WS Pool**: Multiple instances share the same WebSocket connection for efficiency
+- **RFQ (Request for Quote)**: Variational uses RFQ style where price depends on quantity, `get_orderbook` returns single-level indicative quote
+- **prefer_ws**: Most exchanges default to `prefer_ws=True`, with automatic REST fallback on WS failure
+
+---
+
+## Requirements
+
+- Python 3.8+ / **Windows requires 3.10 (due to fastecdsa library)**
+- Linux/macOS recommended (Windows works but some dependencies may take longer to build)
+- Latest pip version recommended
+
+---
+
+## Installation
+
+Install directly from GitHub. The default branch for this repo is `master`.
+
+```bash
+# Virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate
+
+# Install
+pip install "mpdex @ git+https://github.com/NA-DEGEN-GIRL/multi-perp-dex.git@master"
+
+# Upgrade
+pip install -U "mpdex @ git+https://github.com/NA-DEGEN-GIRL/multi-perp-dex.git@master"
+```
+
+Main runtime dependencies included:
+- aiohttp, pynacl, ccxt, eth-hash
+- lighter-sdk (installed from git repo), grvt-pysdk
+- cairo-lang (may take time to install)
+
+> Tip: If your `pip --version` is outdated, VCS (git) dependency installation may fail. Update with `pip install --upgrade pip`.
+
+---
+
+## Directory Structure (Summary)
+
+```text
+wrappers/               # Exchange-specific wrapper implementations
+  backpack.py
+  edgex.py
+  grvt.py
+  lighter.py
+  paradex.py
+  treadfi_hl.py
+  treadfi_login.html
+  variational_auth.py
+  variational.py
+  pacifica.py
+  hyperliquid_ws_client.py # WebSocket
+  hyperliquid.py
+mpdex/__init__.py       # Public API (lazy imports), exposes create_exchange/symbol_create
+multi_perp_dex.py       # Common interface (abstract class) and Mixin
+exchange_factory.py     # String→wrapper mapping, lazy imports and symbol creation
+keys/                   # Key templates (copy.pk_*.py)
+test_exchanges/         # Example-level test scripts
+pyproject.toml
+```
+
+---
+
+## Credentials Setup
+
+Copy the key template files and fill in the values. Get actual values from each exchange's website/console.
+
+```bash
+cp keys/copy.pk_lighter.py  keys/pk_lighter.py
+cp keys/copy.pk_grvt.py     keys/pk_grvt.py
+cp keys/copy.pk_paradex.py  keys/pk_paradex.py
+cp keys/copy.pk_edgex.py    keys/pk_edgex.py
+cp keys/copy.pk_backpack.py keys/pk_backpack.py
+cp keys/copy.pk_treadfi_hl.py keys/pk_treadfi_hl.py
+cp keys/copy.pk_variational.py keys/variational.py
+cp keys/copy.pk_pacifica.py keys/pacifica.py
+```
+
+Templates are defined as Dataclasses, using the exact field names required by `exchange_factory.create_exchange()`.
+
+- Lighter: account_id(int), private_key(str), api_key_id(int), l1_address(str)
+- GRVT: api_key(str), account_id(str), secret_key(str)
+- Paradex: wallet_address(str), paradex_address(str), paradex_private_key(str)
+- Edgex: account_id(str), private_key(str)
+- Backpack: api_key(str), secret_key(str)
+- Tread.fi: session_cookies(dict, optional), evm_private_key(str, optional), main_wallet_address(str, required), sub_wallet_address(str, required), account_name(str, required)
+  - Tread.fi's sub_wallet_address is the sub-account address; if not used, set it same as main_wallet_address. If you know the session cookies, no separate login is required.
+- Variational: evm_wallet_address(str, required), session_cookies(dict, optional), evm_private_key(str, optional)
+  - Variational: If you know the vr-token, no separate login is required.
+- Pacifica: public_key(str), agent_public_key(str), agent_private_key(str)
+
+---
+
+## Symbol Rules
+
+Each exchange uses different symbol (ticker) formats. Follow the rules below or use `symbol_create(exchange, coin)`.
+
+- Paradex: `f"{COIN}-USD-PERP"` (e.g., BTC-USD-PERP)
+- Edgex: `f"{COIN}USDT"` (e.g., BTCUSDT)
+- GRVT: `f"{COIN}_USDT_Perp"` (e.g., BTC_USDT_Perp)
+- Backpack: `f"{COIN}_USDC_PERP"` (e.g., BTC_USDC_PERP)
+- Lighter: Coin symbol as-is (e.g., BTC)
+- TreadFi: `f"{COIN}:PERP-USDC"`, with dex: `f"{DEX}_{COIN}:PERP-USDC"`, spot not currently supported
+- Variational: `f"{COIN}"`
+
+```python
+from mpdex import symbol_create
+symbol = symbol_create("grvt", "BTC")  # "BTC_USDT_Perp"
+```
+
+---
+
+## Quick Start: Using the Factory Function
+
+Create an instance directly with `create_exchange(exchange_name, key_params)`. All APIs are async.
+
+```python
+# example_lighter.py
+import asyncio
+from mpdex import create_exchange, symbol_create
+from keys.pk_lighter import LIGHTER_KEY  # File copied/created above
+
+async def main():
+    # Lighter example (lighter-sdk included in default dependencies)
+    ex = await create_exchange("lighter", LIGHTER_KEY)  # Initializes market metadata internally
+    symbol = symbol_create("lighter", "BTC")
+
+    # Get collateral
+    print(await ex.get_collateral())
+
+    # Get position
+    print(await ex.get_position(symbol))
+
+    # Market order example
+    # print(await ex.create_order(symbol, side="buy", amount=0.001))
+
+    # Limit order example
+    # print(await ex.create_order(symbol, side="sell", amount=0.001, price=85000))
+
+    # Open orders
+    # print(await ex.get_open_orders(symbol))
+
+    # Cancel orders
+    # print(await ex.cancel_orders(symbol))
+
+    await ex.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Run:
+```bash
+python example_lighter.py
+```
+
+---
+
+## Direct Usage: Import Specific Wrapper Class
+
+You can import individual exchange wrappers directly for fine-grained control.
+
+```python
+# example_direct_lighter.py
+import asyncio
+from mpdex import LighterExchange
+from keys.pk_lighter import LIGHTER_KEY
+
+async def main():
+    ex = LighterExchange(
+        account_id=LIGHTER_KEY.account_id,
+        private_key=LIGHTER_KEY.private_key,
+        api_key_id=LIGHTER_KEY.api_key_id,
+        l1_address=LIGHTER_KEY.l1_address,
+    )
+    await ex.initialize()
+    await ex.initialize_market_info()
+
+    print(await ex.get_collateral())
+    print(await ex.get_position("BTC"))
+    await ex.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+---
+
+## Common Interface (API)
+
+All exchange wrappers implement the same abstract interface.
+`multi_perp_dex.MultiPerpDex`:
+
+- `create_order(symbol, side, amount, price=None, order_type='market')`
+- `get_position(symbol)`
+- `close_position(symbol, position)` — Takes a position object and closes with opposite order
+- `get_collateral()` — Available/total collateral
+- `get_open_orders(symbol)`
+- `cancel_orders(symbol, open_orders=None)`
+- `close()` — Clean up session if needed
+
+Mixin (`MultiPerpDexMixin`) provides default implementations for `close_position` and `get_open_orders`.
+
+---
+
+## Minimal Examples by Exchange
+
+Lighter:
+```python
+from mpdex import create_exchange, symbol_create
+from keys.pk_lighter import LIGHTER_KEY
+import asyncio
+
+async def main():
+    ex = await create_exchange("lighter", LIGHTER_KEY)
+    symbol = symbol_create("lighter", "BTC")
+    print(await ex.get_collateral())
+    await ex.close()
+
+asyncio.run(main())
+```
+
+GRVT:
+```python
+from mpdex import create_exchange, symbol_create
+from keys.pk_grvt import GRVT_KEY
+import asyncio
+
+async def main():
+    ex = await create_exchange("grvt", GRVT_KEY)
+    symbol = symbol_create("grvt", "BTC")  # "BTC_USDT_Perp"
+    print(await ex.get_position(symbol))
+    await ex.close()
+
+asyncio.run(main())
+```
+
+Paradex:
+```python
+from mpdex import create_exchange, symbol_create
+from keys.pk_paradex import PARADEX_KEY
+import asyncio
+
+async def main():
+    ex = await create_exchange("paradex", PARADEX_KEY)
+    symbol = symbol_create("paradex", "BTC")  # "BTC-USD-PERP"
+    print(await ex.get_open_orders(symbol))
+    await ex.close()
+
+asyncio.run(main())
+```
+
+Edgex:
+```python
+from mpdex import create_exchange, symbol_create
+from keys.pk_edgex import EDGEX_KEY
+import asyncio
+
+async def main():
+    ex = await create_exchange("edgex", EDGEX_KEY)
+    symbol = symbol_create("edgex", "BTC")  # "BTCUSDT"
+    print(await ex.get_collateral())
+    await ex.close()
+
+asyncio.run(main())
+```
+
+Backpack:
+```python
+from mpdex import create_exchange, symbol_create
+from keys.pk_backpack import BACKPACK_KEY
+import asyncio
+
+async def main():
+    ex = await create_exchange("backpack", BACKPACK_KEY)
+    symbol = symbol_create("backpack", "BTC")  # "BTC_USDC_PERP"
+    print(await ex.get_open_orders(symbol))
+    await ex.close()
+
+asyncio.run(main())
+```
+
+---
+
+## Running Example/Test Scripts
+
+You can run the simple test (example) scripts included in the repo.
+Before running, ensure your `keys/pk_*.py` files are properly configured.
+
+```bash
+python test_exchanges/test_lighter.py
+python test_exchanges/test_grvt.py
+python test_exchanges/test_paradex.py
+python test_exchanges/test_edgex.py
+python test_exchanges/test_backpack.py
+python test_exchanges/test_treadfi_hl.py
+python test_exchanges/test_variational.py
+```
+
+---
+
+## Troubleshooting
+
+- Git branch error (e.g., main not found)
+  - This repo uses the `master` branch. Specify `@master` during installation.
+- Dependency installation slow/failing
+  - Could be network issues (proxy, firewall) or VCS (git) access permissions. Try `pip install --upgrade pip` and retry.
+- Errors when calling Lighter/GRVT
+  - Verify key values are correct and obtained from the exchange's API console.
+- Event loop/async errors
+  - All calls are async. Run with `asyncio.run(...)`.
+
+---
+
+## Security Notice
+
+- `keys/pk_*.py` files contain sensitive information. Never commit them to public repositories.
+- In production environments, use environment variables or secret managers to inject keys.
+
+---
+
+## License
+
+MIT
