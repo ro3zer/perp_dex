@@ -76,7 +76,8 @@ class GrvtExchange(MultiPerpDexMixin, MultiPerpDex):
             "entry_price": entry_price,
             "unrealized_pnl": unrealized_pnl,
             "side": side,
-            "size": size
+            "size": size,
+            "raw_data":pos
         }
     
     async def get_position(self, symbol):

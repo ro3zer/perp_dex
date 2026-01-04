@@ -46,7 +46,8 @@ class ParadexExchange(MultiPerpDexMixin, MultiPerpDex):
             "entry_price": float(position.get("average_entry_price", 0)),
             "unrealized_pnl": float(position.get("unrealized_pnl", 0)),
             "side": position.get("side", "").lower(),
-            "size": position.get("size").replace('-','')
+            "size": position.get("size").replace('-',''),
+            "raw_data":position
         }
     
     async def get_mark_price(self, symbol):

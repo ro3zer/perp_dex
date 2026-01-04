@@ -717,8 +717,9 @@ alert('Signing/Submit failed: ' + e.message);
 				return {
 					"symbol": symbol,
 					"side": "long" if pos.get("side") == "bid" else "short",
-					"price": pos.get("entry_price"),
+					"entry_price": pos.get("entry_price"),
 					"size": pos.get("amount"),
+					"raw_data":pos
 				}
 		return None
 

@@ -350,7 +350,8 @@ class BackpackExchange(MultiPerpDexMixin, MultiPerpDex):
             "entry_price": entry_price,
             "unrealized_pnl": unrealized_pnl,
             "side": side,
-            "size": size
+            "size": size,
+            "raw_data":position
         }
         
     async def get_collateral(self):

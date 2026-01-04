@@ -370,6 +370,7 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
             "leverage": pos.get("leverage", "1"),
             "margin_mode": pos.get("margin_mode", "cross"),
             "liq_price": pos.get("liq_price", "0"),
+            "raw_data":pos
         }
 
     # ----------------------------

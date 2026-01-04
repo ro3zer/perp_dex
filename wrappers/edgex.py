@@ -290,9 +290,10 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
         contract_id = self.market_info[symbol]['contractId']
         
         size = 0
-        
+        pos = None
         for position in position_list:
             if position['contractId'] == contract_id:
+                pos = position
                 #print(position)
                 size = position['openSize']
                 side = 'short' if '-' in size else 'long'
@@ -310,7 +311,8 @@ class EdgexExchange(MultiPerpDexMixin, MultiPerpDex):
             "entry_price": float(entry_price),
             "unrealized_pnl": round(float(unrealized_pnl),2),
             "side": side,
-            "size": size
+            "size": size,
+            "raw_data":pos
         }
         
     
