@@ -50,17 +50,21 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         self.wallet_address = wallet_address
         self.chain = chain
         self._http_timeout = http_timeout
-        # WS support flags (StandX has partial WS support - position/balance subscription works but server doesn't send data)
+        # WS support flags
         self.ws_supported = {
             "get_mark_price": True,
-            "get_position": False,  # WS subscription exists but server doesn't send data
-            "get_open_orders": False,
-            "get_collateral": False,  # WS subscription exists but server doesn't send data
+            "get_position": True,  # REST initial cache + WS updates
+            "get_open_orders": True,  # REST initial cache + WS updates
+            "get_collateral": True,  # REST initial cache + WS updates (testing)
             "get_orderbook": True,
-            "create_order": False,
-            "cancel_orders": False,
+            "create_order": True,  # Order Response Stream (ws-api/v1)
+            "cancel_orders": True,  # Order Response Stream (ws-api/v1)
             "update_leverage": False,
         }
+
+        # WS preference (can be disabled for REST fallback)
+        self._prefer_ws = True
+        self._prefer_order_ws = True
 
         # Auth handler
         self._auth = StandXAuth(
@@ -77,8 +81,9 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         # Collateral symbol
         self.COLLATERAL_SYMBOL = "DUSD"
 
-        # WebSocket client
-        self.ws_client = None
+        # WebSocket clients
+        self.ws_client = None  # Market Stream (ws-stream/v1)
+        self.order_ws_client = None  # Order Response Stream (ws-api/v1)
 
     async def init(self, login_port: Optional[int] = None, open_browser: bool = True) -> "StandXExchange":
         """
@@ -91,13 +96,20 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         await self._auth.login(port=login_port, open_browser=open_browser)
         await self._update_available_symbols()
 
-        # Initialize WebSocket if enabled
+        # Initialize WebSocket clients
         await self._create_ws_client()
+        if self._prefer_order_ws:
+            await self._create_order_ws_client()
+
+        # Subscribe to user channels and load initial cache
+        if self._prefer_ws and self.ws_client:
+            await self.ws_client.subscribe_user_channels()
+            await self._load_initial_cache()
 
         return self
 
     async def _create_ws_client(self):
-        """Create and authenticate WebSocket client"""
+        """Create and authenticate WebSocket client (Market Stream)"""
         if self.ws_client is not None:
             return
 
@@ -107,6 +119,44 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
             wallet_address=self.wallet_address,
             jwt_token=self._auth.token,
         )
+
+    async def _create_order_ws_client(self):
+        """Create and authenticate Order WebSocket client (Order Response Stream)"""
+        if self.order_ws_client is not None:
+            return
+
+        from .standx_ws_client import ORDER_WS_POOL
+
+        self.order_ws_client = await ORDER_WS_POOL.acquire(
+            wallet_address=self.wallet_address,
+            jwt_token=self._auth.token,
+            auth_handler=self._auth,
+        )
+        print("[StandXExchange] Order WS initialized")
+
+    async def _load_initial_cache(self) -> None:
+        """Load initial data via REST and set in WS cache"""
+        if not self.ws_client:
+            return
+
+        try:
+            # 1. Positions
+            positions_resp = await self._auth_get(f"{STANDX_PERPS_BASE}/api/query_positions")
+            if isinstance(positions_resp, list):
+                self.ws_client.set_initial_positions(positions_resp)
+
+            # 2. Open Orders
+            orders_resp = await self._auth_get(f"{STANDX_PERPS_BASE}/api/query_open_orders")
+            orders = orders_resp.get("result", []) if isinstance(orders_resp, dict) else []
+            self.ws_client.set_initial_orders(orders)
+
+            # 3. Collateral/Balance
+            balance_resp = await self._auth_get(f"{STANDX_PERPS_BASE}/api/query_balance")
+            if isinstance(balance_resp, dict):
+                self.ws_client.set_initial_collateral(balance_resp)
+
+        except Exception as e:
+            print(f"[StandXExchange] Failed to load initial cache: {e}")
 
     async def _reauth(self) -> bool:
         """Re-authenticate when token expires"""
@@ -122,6 +172,14 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
                 self.ws_client._authenticated = False
                 if self.ws_client._ws and self.ws_client._running:
                     await self.ws_client.authenticate(self._auth.token)
+
+            # Update Order WS client token if exists
+            if self.order_ws_client:
+                self.order_ws_client.jwt_token = self._auth.token
+                self.order_ws_client._auth_handler = self._auth
+                self.order_ws_client._authenticated = False
+                if self.order_ws_client._ws and self.order_ws_client._running:
+                    await self.order_ws_client._do_auth()
 
             print("[standx] re-authentication successful")
             return True
@@ -173,11 +231,16 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
             return {"raw": text}
 
     async def close(self):
-        """Cleanup - release WebSocket client"""
+        """Cleanup - release WebSocket clients"""
         if self.ws_client:
             from .standx_ws_client import WS_POOL
             await WS_POOL.release(self.wallet_address)
             self.ws_client = None
+
+        if self.order_ws_client:
+            from .standx_ws_client import ORDER_WS_POOL
+            await ORDER_WS_POOL.release(self.wallet_address)
+            self.order_ws_client = None
 
     # ----------------------------
     # Symbol Info
@@ -272,7 +335,16 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
                 "upnl": float,
             }
         """
-        # WS subscription exists but server doesn't send data - use REST
+        # Try WS (cached data from initial load + WS updates)
+        if self._prefer_ws and self.ws_client:
+            ready = await self.ws_client.wait_collateral_ready(timeout=0.5)
+            if ready:
+                balance = self.ws_client.get_collateral()
+                if balance:
+                    return self._parse_collateral(balance)
+
+        # REST fallback
+        print("[StandXExchange] get_collateral: REST fallback")
         return await self.get_collateral_rest()
 
     async def get_collateral_ws(self, timeout: float = 5.0) -> Dict[str, Any]:
@@ -316,8 +388,19 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
     # ----------------------------
     async def get_position(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
-        Get position via REST (WS subscription exists but server doesn't send data)
+        Get position (WS first, REST fallback)
+        Uses cached data from initial REST load + WS updates
         """
+        # Try WS (cached data from initial load + WS updates)
+        if self._prefer_ws and self.ws_client:
+            ready = await self.ws_client.wait_position_ready(timeout=0.5)
+            if ready:
+                pos = self.ws_client.get_position(symbol)
+                # None means no position (valid result)
+                return self._parse_position(pos) if pos else None
+
+        # REST fallback
+        print(f"[StandXExchange] get_position: REST fallback")
         return await self.get_position_rest(symbol)
 
     async def get_position_ws(self, symbol: str, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
@@ -376,7 +459,7 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
     # ----------------------------
     # Orders
     # ----------------------------
-    async def create_order(
+    def _build_order_payload(
         self,
         symbol: str,
         side: str,
@@ -387,19 +470,7 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         time_in_force: Optional[str] = None,
         client_order_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        POST /api/new_order
-
-        Args:
-            symbol: Trading pair (e.g., "BTC-USD")
-            side: "buy" or "sell"
-            amount: Order quantity
-            price: Order price (required for limit orders)
-            order_type: "market" or "limit"
-            reduce_only: Only reduce position
-            time_in_force: "gtc", "ioc", or "alo"
-            client_order_id: Custom order ID
-        """
+        """Build order payload with validation"""
         # Determine order type
         if price is not None:
             order_type = "limit"
@@ -443,6 +514,51 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         if client_order_id:
             payload["cl_ord_id"] = client_order_id
 
+        return payload
+
+    async def create_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        price: Optional[float] = None,
+        order_type: str = "market",
+        reduce_only: bool = False,
+        time_in_force: Optional[str] = None,
+        client_order_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create order (WS first, REST fallback)
+
+        Args:
+            symbol: Trading pair (e.g., "BTC-USD")
+            side: "buy" or "sell"
+            amount: Order quantity
+            price: Order price (required for limit orders)
+            order_type: "market" or "limit"
+            reduce_only: Only reduce position
+            time_in_force: "gtc", "ioc", or "alo"
+            client_order_id: Custom order ID
+        """
+        payload = self._build_order_payload(
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            price=price,
+            order_type=order_type,
+            reduce_only=reduce_only,
+            time_in_force=time_in_force,
+            client_order_id=client_order_id,
+        )
+
+        # Try WS first
+        if self._prefer_order_ws and self.order_ws_client:
+            try:
+                return await self.order_ws_client.create_order(payload)
+            except Exception as e:
+                print(f"[StandXExchange] create_order WS failed, falling back to REST: {e}")
+
+        # REST fallback
         return await self._post_signed("/api/new_order", payload)
 
     async def cancel_orders(self, symbol: str, open_orders: Optional[List] = None) -> Dict[str, Any]:
@@ -474,25 +590,46 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
 
     async def cancel_order(self, order_id: Optional[int] = None, client_order_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Cancel single order
+        Cancel single order (WS first, REST fallback)
 
         POST /api/cancel_order
         """
+        if not order_id and not client_order_id:
+            raise ValueError("order_id or client_order_id required")
+
+        # Try WS first
+        if self._prefer_order_ws and self.order_ws_client:
+            try:
+                return await self.order_ws_client.cancel_order(
+                    order_id=order_id,
+                    cl_ord_id=client_order_id,
+                )
+            except Exception as e:
+                print(f"[StandXExchange] cancel_order WS failed, falling back to REST: {e}")
+
+        # REST fallback
         payload: Dict[str, Any] = {}
         if order_id:
             payload["order_id"] = order_id
         if client_order_id:
             payload["cl_ord_id"] = client_order_id
 
-        if not payload:
-            raise ValueError("order_id or client_order_id required")
-
         return await self._post_signed("/api/cancel_order", payload)
 
     async def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        GET /api/query_open_orders
+        Get open orders (WS first, REST fallback)
+        Uses cached data from initial REST load + WS updates
         """
+        # Try WS (cached data from initial load + WS updates)
+        if self._prefer_ws and self.ws_client:
+            ready = await self.ws_client.wait_orders_ready(timeout=0.5)
+            if ready:
+                orders = self.ws_client.get_open_orders(symbol)
+                return [self._parse_order(o) for o in orders]
+
+        # REST fallback
+        print(f"[StandXExchange] get_open_orders: REST fallback")
         url = f"{STANDX_PERPS_BASE}/api/query_open_orders"
         params = {"symbol": symbol} if symbol else {}
         data = await self._auth_get(url, params=params)

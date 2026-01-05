@@ -8,9 +8,11 @@ Provides real-time data fetching for:
 - balance (user balance) - requires auth
 """
 import asyncio
+import json
 import logging
 import time
-from typing import Optional, Dict, Any, Set
+import uuid
+from typing import Optional, Dict, Any, Set, List
 
 from wrappers.base_ws_client import BaseWSClient, _json_dumps
 
@@ -46,12 +48,14 @@ class StandXWSClient(BaseWSClient):
         self._orderbooks: Dict[str, Dict[str, Any]] = {}
         self._positions: Dict[str, Dict[str, Any]] = {}  # symbol -> position
         self._collateral: Optional[Dict[str, Any]] = None
+        self._orders: Dict[int, Dict[str, Any]] = {}  # order_id -> order
 
-        # Events for waiting
+        # Events for waiting (data ready)
         self._price_events: Dict[str, asyncio.Event] = {}
         self._orderbook_events: Dict[str, asyncio.Event] = {}
         self._position_event: asyncio.Event = asyncio.Event()
         self._collateral_event: asyncio.Event = asyncio.Event()
+        self._orders_event: asyncio.Event = asyncio.Event()
 
         # Auth state
         self._authenticated: bool = False
@@ -112,6 +116,20 @@ class StandXWSClient(BaseWSClient):
             }
             self._collateral_event.set()
 
+        elif channel == "order":
+            # Order updates
+            order_id = payload.get("id")
+            status = payload.get("status", "").lower()
+            if order_id:
+                if status in ("filled", "canceled", "rejected"):
+                    # Remove completed/canceled orders
+                    self._orders.pop(order_id, None)
+                else:
+                    # Add/update open orders
+                    self._orders[order_id] = payload
+                self._orders_event.set()
+                logger.debug(f"[StandXWS] order update: id={order_id}, status={status}")
+
     async def _resubscribe(self) -> None:
         """Resubscribe to all channels after reconnect"""
         # 캐시된 데이터 초기화 (stale data 방지)
@@ -119,11 +137,13 @@ class StandXWSClient(BaseWSClient):
         self._orderbooks.clear()
         self._positions.clear()
         self._collateral = None
+        self._orders.clear()
         self._authenticated = False
 
         # 이벤트 초기화
         self._position_event.clear()
         self._collateral_event.clear()
+        self._orders_event.clear()
         for ev in self._price_events.values():
             ev.clear()
         for ev in self._orderbook_events.values():
@@ -290,10 +310,19 @@ class StandXWSClient(BaseWSClient):
         await self._send_msg({"subscribe": {"channel": "balance"}})
         self._user_subs.add("balance")
 
+    async def subscribe_orders(self) -> None:
+        """Subscribe to order channel (requires auth)"""
+        if "order" in self._user_subs:
+            return
+        print("[StandXWS] Subscribe: order")
+        await self._send_msg({"subscribe": {"channel": "order"}})
+        self._user_subs.add("order")
+
     async def subscribe_user_channels(self) -> None:
         """Subscribe to all user channels"""
         await self.subscribe_position()
         await self.subscribe_balance()
+        await self.subscribe_orders()
 
     # ----------------------------
     # Data Getters
@@ -353,6 +382,13 @@ class StandXWSClient(BaseWSClient):
         """Get cached collateral/balance"""
         return self._collateral
 
+    def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get cached open orders, optionally filtered by symbol"""
+        orders = list(self._orders.values())
+        if symbol:
+            orders = [o for o in orders if o.get("symbol") == symbol]
+        return orders
+
     # ----------------------------
     # Wait for data
     # ----------------------------
@@ -403,6 +439,45 @@ class StandXWSClient(BaseWSClient):
             return True
         except asyncio.TimeoutError:
             return False
+
+    async def wait_orders_ready(self, timeout: float = 3.0) -> bool:
+        """Wait until orders data is available (or event is set)"""
+        if self._orders_event.is_set():
+            return True
+        try:
+            await asyncio.wait_for(self._orders_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    # ----------------------------
+    # Initial Cache Loading
+    # ----------------------------
+    def set_initial_positions(self, positions: List[Dict[str, Any]]) -> None:
+        """Set initial positions from REST API"""
+        self._positions.clear()
+        for pos in positions:
+            symbol = pos.get("symbol")
+            if symbol:
+                self._positions[symbol] = pos
+        self._position_event.set()
+        print(f"[StandXWS] Initial positions loaded: {len(self._positions)}")
+
+    def set_initial_orders(self, orders: List[Dict[str, Any]]) -> None:
+        """Set initial orders from REST API"""
+        self._orders.clear()
+        for order in orders:
+            order_id = order.get("id")
+            if order_id:
+                self._orders[order_id] = order
+        self._orders_event.set()
+        print(f"[StandXWS] Initial orders loaded: {len(self._orders)}")
+
+    def set_initial_collateral(self, collateral: Dict[str, Any]) -> None:
+        """Set initial collateral from REST API"""
+        self._collateral = collateral
+        self._collateral_event.set()
+        print(f"[StandXWS] Initial collateral loaded")
 
 
 # ----------------------------
@@ -467,3 +542,296 @@ class StandXWSPool:
 
 # Global singleton
 WS_POOL = StandXWSPool()
+
+
+# ============================================================
+# Order Response Stream Client (ws-api/v1)
+# For order creation and cancellation
+# ============================================================
+
+STANDX_ORDER_WS_URL = "wss://perps.standx.com/ws-api/v1"
+
+
+class StandXOrderWSClient(BaseWSClient):
+    """
+    StandX Order Response Stream WebSocket 클라이언트.
+
+    별도의 엔드포인트 (ws-api/v1)를 사용하여 주문 생성/취소를 처리.
+    Market Stream과 별도로 운영됨.
+    """
+
+    WS_URL = STANDX_ORDER_WS_URL
+    PING_INTERVAL = 30.0  # 30초마다 ping
+    RECV_TIMEOUT = 60.0
+    RECONNECT_MIN = 0.2
+    RECONNECT_MAX = 30.0
+
+    def __init__(self, jwt_token: Optional[str] = None, auth_handler=None):
+        super().__init__()
+        self.jwt_token = jwt_token
+        self._auth_handler = auth_handler  # StandXAuth instance for signing
+
+        # Session ID (consistent throughout session)
+        self._session_id = str(uuid.uuid4())
+
+        # Pending requests (request_id -> Future)
+        self._pending_requests: Dict[str, asyncio.Future] = {}
+        self._pending_lock = asyncio.Lock()
+
+        # Auth state
+        self._authenticated: bool = False
+        self._auth_event: asyncio.Event = asyncio.Event()
+
+        # Reconnect event
+        self._reconnect_event: asyncio.Event = asyncio.Event()
+        self._reconnect_event.set()
+
+    async def _handle_message(self, data: Dict[str, Any]) -> None:
+        """Handle incoming WebSocket message"""
+        # Response format: {"code": 0, "message": "success", "request_id": "xxx"}
+        request_id = data.get("request_id")
+        code = data.get("code")
+        message = data.get("message", "")
+
+        # Check if this is an auth response
+        if request_id and request_id in self._pending_requests:
+            async with self._pending_lock:
+                future = self._pending_requests.pop(request_id, None)
+                if future and not future.done():
+                    if code == 0:
+                        future.set_result(data)
+                    else:
+                        future.set_exception(RuntimeError(f"Order API error: code={code}, msg={message}"))
+
+        # Auth success check (code 200 for auth)
+        if code == 200 and "success" in message.lower():
+            self._authenticated = True
+            self._auth_event.set()
+        elif code == 0:
+            # General success - might be auth login
+            if not self._authenticated and "success" in message.lower():
+                self._authenticated = True
+                self._auth_event.set()
+
+    async def _resubscribe(self) -> None:
+        """Re-authenticate after reconnect"""
+        self._authenticated = False
+        self._auth_event.clear()
+
+        # Clear pending requests (they will timeout)
+        async with self._pending_lock:
+            for future in self._pending_requests.values():
+                if not future.done():
+                    future.set_exception(RuntimeError("Connection lost during reconnect"))
+            self._pending_requests.clear()
+
+        # Generate new session ID
+        self._session_id = str(uuid.uuid4())
+
+        # Re-authenticate if we have a token
+        if self.jwt_token:
+            await self._do_auth()
+
+    def _build_ping_message(self) -> Optional[str]:
+        """Build ping message for Order WS"""
+        # StandX Order WS uses WebSocket ping frames (handled by base class)
+        return None
+
+    async def connect(self) -> bool:
+        """Connect and authenticate"""
+        result = await super().connect()
+        if result and self.jwt_token:
+            await self._do_auth()
+        return result
+
+    async def _do_auth(self) -> bool:
+        """Send auth:login message"""
+        if not self._ws or not self._running:
+            return False
+
+        request_id = str(uuid.uuid4())
+        auth_msg = {
+            "session_id": self._session_id,
+            "request_id": request_id,
+            "method": "auth:login",
+            "params": json.dumps({"token": self.jwt_token}),
+        }
+
+        try:
+            await self._ws.send(_json_dumps(auth_msg))
+            # Wait for auth response
+            try:
+                await asyncio.wait_for(self._auth_event.wait(), timeout=10.0)
+                return self._authenticated
+            except asyncio.TimeoutError:
+                print("[StandXOrderWS] auth timeout")
+                return False
+        except Exception as e:
+            print(f"[StandXOrderWS] auth error: {e}")
+            return False
+
+    async def close(self) -> None:
+        """Close connection"""
+        await super().close()
+        self._authenticated = False
+        self._auth_event.clear()
+        async with self._pending_lock:
+            self._pending_requests.clear()
+
+    async def _handle_disconnect(self) -> None:
+        """Handle disconnection"""
+        self._reconnect_event.clear()
+        self._authenticated = False
+        await super()._handle_disconnect()
+        self._reconnect_event.set()
+
+    async def _send_request(self, method: str, params: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        """
+        Send a request and wait for response.
+
+        Args:
+            method: "order:new" or "order:cancel"
+            params: Request parameters (will be JSON stringified)
+            timeout: Request timeout in seconds
+        """
+        if self._reconnecting:
+            try:
+                await asyncio.wait_for(self._reconnect_event.wait(), timeout=60.0)
+            except asyncio.TimeoutError:
+                raise RuntimeError("[StandXOrderWS] reconnect timeout")
+
+        if not self._ws or not self._running:
+            await self.connect()
+
+        if not self._authenticated:
+            raise RuntimeError("[StandXOrderWS] not authenticated")
+
+        request_id = str(uuid.uuid4())
+        params_str = json.dumps(params, separators=(",", ":"))
+
+        # Build headers (need body signature)
+        if self._auth_handler is None:
+            raise RuntimeError("[StandXOrderWS] auth_handler required for signing")
+
+        sign_headers = self._auth_handler.sign_request(params_str)
+
+        msg = {
+            "session_id": self._session_id,
+            "request_id": request_id,
+            "method": method,
+            "header": {
+                "x-request-id": sign_headers["x-request-id"],
+                "x-request-timestamp": sign_headers["x-request-timestamp"],
+                "x-request-signature": sign_headers["x-request-signature"],
+            },
+            "params": params_str,
+        }
+
+        # Create future for response
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        async with self._pending_lock:
+            self._pending_requests[request_id] = future
+
+        try:
+            await self._ws.send(_json_dumps(msg))
+            result = await asyncio.wait_for(future, timeout=timeout)
+            return result
+        except asyncio.TimeoutError:
+            async with self._pending_lock:
+                self._pending_requests.pop(request_id, None)
+            raise RuntimeError(f"[StandXOrderWS] request timeout: {method}")
+        except Exception as e:
+            async with self._pending_lock:
+                self._pending_requests.pop(request_id, None)
+            raise
+
+    async def create_order(self, params: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        """
+        Create order via WebSocket.
+
+        Args:
+            params: Order parameters (same as REST API)
+                - symbol: Trading pair (e.g., "BTC-USD")
+                - side: "buy" or "sell"
+                - order_type: "market" or "limit"
+                - qty: Order quantity (string)
+                - price: Order price (string, for limit orders)
+                - reduce_only: bool
+                - time_in_force: "gtc", "ioc", or "alo"
+        """
+        return await self._send_request("order:new", params, timeout=timeout)
+
+    async def cancel_order(self, order_id: Optional[int] = None, cl_ord_id: Optional[str] = None, timeout: float = 30.0) -> Dict[str, Any]:
+        """
+        Cancel order via WebSocket.
+
+        Args:
+            order_id: Server order ID
+            cl_ord_id: Client order ID
+        """
+        params: Dict[str, Any] = {}
+        if order_id:
+            params["order_id"] = order_id
+        if cl_ord_id:
+            params["cl_ord_id"] = cl_ord_id
+
+        if not params:
+            raise ValueError("order_id or cl_ord_id required")
+
+        return await self._send_request("order:cancel", params, timeout=timeout)
+
+
+class StandXOrderWSPool:
+    """
+    Singleton pool for StandX Order WebSocket connections.
+    """
+
+    def __init__(self):
+        self._clients: Dict[str, StandXOrderWSClient] = {}  # key: wallet_address
+        self._lock = asyncio.Lock()
+
+    async def acquire(
+        self,
+        wallet_address: str,
+        jwt_token: Optional[str] = None,
+        auth_handler=None,
+    ) -> StandXOrderWSClient:
+        """Get or create an Order WebSocket client"""
+        key = wallet_address.lower()
+
+        async with self._lock:
+            if key in self._clients:
+                client = self._clients[key]
+                # Update token if changed
+                if jwt_token and client.jwt_token != jwt_token:
+                    client.jwt_token = jwt_token
+                    client._auth_handler = auth_handler
+                    if client._running:
+                        client._authenticated = False
+                        client._auth_event.clear()
+                        await client._do_auth()
+                # Reconnect if needed
+                if not client._running:
+                    await client.connect()
+                return client
+
+            # Create new client
+            client = StandXOrderWSClient(jwt_token=jwt_token, auth_handler=auth_handler)
+            await client.connect()
+            self._clients[key] = client
+            return client
+
+    async def release(self, wallet_address: str) -> None:
+        """Release a client (keeps connection alive)"""
+        pass
+
+    async def close_all(self) -> None:
+        """Close all connections"""
+        async with self._lock:
+            for client in self._clients.values():
+                await client.close()
+            self._clients.clear()
+
+
+# Global singleton for Order WS
+ORDER_WS_POOL = StandXOrderWSPool()

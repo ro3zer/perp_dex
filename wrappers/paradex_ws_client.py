@@ -157,16 +157,22 @@ class ParadexWSClient(BaseWSClient):
         """오더북 구독"""
         # Paradex 형식: order_book.{symbol}.snapshot@15@100ms
         channel = f"order_book.{symbol}.snapshot@15@100ms"
+        if channel in self._subscriptions:
+            return  # 이미 구독됨
         if symbol not in self._orderbook_events:
             self._orderbook_events[symbol] = asyncio.Event()
         await self.subscribe(channel)
+        print(f"[ParadexWS] Subscribe: orderbook/{symbol}")
 
     async def unsubscribe_orderbook(self, symbol: str) -> None:
         """오더북 구독 해제"""
         channel = f"order_book.{symbol}.snapshot@15@100ms"
+        if channel not in self._subscriptions:
+            return  # 구독 안 되어있음
         await self.unsubscribe(channel)
         self._orderbooks.pop(symbol, None)
         self._orderbook_events.pop(symbol, None)
+        print(f"[ParadexWS] Unsubscribe: orderbook/{symbol}")
 
     async def subscribe_trades(self, symbol: str) -> None:
         """거래 내역 구독"""

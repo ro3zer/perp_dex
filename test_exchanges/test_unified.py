@@ -15,7 +15,7 @@ from exchange_factory import create_exchange, symbol_create
 # ==================== 여기서 설정 ====================
 
 # 테스트할 거래소 선택 (하나만)
-EXCHANGE = "paradex"
+# EXCHANGE = "paradex"
 # EXCHANGE = "lighter"
 # EXCHANGE = "hyperliquid"
 # EXCHANGE = "edgex"
@@ -24,7 +24,7 @@ EXCHANGE = "paradex"
 # EXCHANGE = "treadfi"
 # EXCHANGE = "grvt"
 # EXCHANGE = "paradex"
-# EXCHANGE = "standx"
+EXCHANGE = "standx"
 # EXCHANGE = "superstack"
 
 # 테스트 코인
@@ -78,7 +78,7 @@ def ws_info(exchange, method_name: str) -> str:
     elif ws_supported.get(method_name) is False:
         return "[REST only]"
     elif ws_supported:
-        return "[REST fallback]"
+        return ""
     return "[REST]"
 
 def not_implemented_check(exchange, method_name: str) -> bool:
