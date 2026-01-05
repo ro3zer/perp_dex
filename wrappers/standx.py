@@ -463,7 +463,7 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         self,
         symbol: str,
         side: str,
-        amount: float,
+        amount: float | str,
         price: Optional[float] = None,
         order_type: str = "market",
         is_reduce_only: bool = False,
@@ -520,7 +520,7 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         self,
         symbol: str,
         side: str,
-        amount: float,
+        amount: float | str,
         price: Optional[float] = None,
         order_type: str = "market",
         is_reduce_only: bool = False,
@@ -540,6 +540,9 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
             time_in_force: "gtc", "ioc", or "alo"
             client_order_id: Custom order ID
         """
+        if isinstance(amount,str):
+            amount = float(str)
+            
         payload = self._build_order_payload(
             symbol=symbol,
             side=side,
