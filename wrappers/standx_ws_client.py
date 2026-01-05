@@ -29,7 +29,7 @@ class StandXWSClient(BaseWSClient):
     """
 
     WS_URL = STANDX_WS_URL
-    PING_INTERVAL = None  # StandX는 ping 사용 안 함
+    PING_INTERVAL = None  # StandX는 ping 없어야 함 (ping 보내면 서버가 끊음)
     RECV_TIMEOUT = 60.0  # 60초간 메시지 없으면 재연결
     RECONNECT_MIN = 0.2
     RECONNECT_MAX = 30.0
@@ -175,7 +175,7 @@ class StandXWSClient(BaseWSClient):
             await self._ws.send(_json_dumps({"subscribe": {"channel": "depth_book", "symbol": symbol}}))
 
     def _build_ping_message(self) -> Optional[str]:
-        """StandX doesn't use ping"""
+        """StandX doesn't use ping (server disconnects if ping is sent)"""
         return None
 
     # ==================== Connection Management ====================
@@ -561,7 +561,7 @@ class StandXOrderWSClient(BaseWSClient):
     """
 
     WS_URL = STANDX_ORDER_WS_URL
-    PING_INTERVAL = 30.0  # 30초마다 ping
+    PING_INTERVAL = None  # StandX는 ping 없어야 함
     RECV_TIMEOUT = 60.0
     RECONNECT_MIN = 0.2
     RECONNECT_MAX = 30.0
@@ -633,8 +633,7 @@ class StandXOrderWSClient(BaseWSClient):
             await self._do_auth()
 
     def _build_ping_message(self) -> Optional[str]:
-        """Build ping message for Order WS"""
-        # StandX Order WS uses WebSocket ping frames (handled by base class)
+        """StandX Order WS doesn't use ping"""
         return None
 
     async def connect(self) -> bool:
