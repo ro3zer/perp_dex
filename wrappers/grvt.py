@@ -56,6 +56,11 @@ class GrvtExchange(MultiPerpDexMixin, MultiPerpDex):
     
     async def init(self):
         await self.exchange.load_markets()
+        # Update available symbols from loaded markets
+        self.available_symbols["perp"] = []
+        for symbol in self.exchange.markets:
+            if "_Perp" in symbol:  # GRVT perp format: BTC_USDT_Perp
+                self.available_symbols["perp"].append(symbol)
         if self.use_ws:
             await self._init_ws()
         return self

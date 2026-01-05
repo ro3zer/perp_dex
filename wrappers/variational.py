@@ -394,7 +394,7 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
     # ---------------------------
     # 내부: 헤더/쿠키 확보(없으면 로그인 시도)
     # ---------------------------
-    async def _headers_and_cookies(self) -> Tuple[dict, dict]:
+    async def _headers_and_cookies(self, coin: Optional[str] = None) -> Tuple[dict, dict]:
         """
         initialize() 또는 명시적 login() 이후에는 self._vr_token(또는 .cache)만 사용.
         이 경로에서는 더 이상 원격 프로빙/로그인을 수행하지 않는다.
@@ -411,10 +411,13 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
                 if not vr:
                     raise RuntimeError("유효한 세션(vr-token)이 없습니다. 먼저 initialize() 또는 login()을 호출하세요.")
 
+        referer = f"https://omni.variational.io/perpetual/{coin.upper()}" if coin else "https://omni.variational.io/"
         headers = {
             "accept": "*/*",
             "content-type": "application/json",
             "vr-connected-address": self.address,
+            "origin": "https://omni.variational.io",
+            "referer": referer,
         }
         cookies = {"vr-token": vr}
         return headers, cookies
@@ -422,8 +425,8 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
     # ---------------------------
     # 내부: HTTP 호출
     # ---------------------------
-    async def _request(self, method: str, path: str, *, params=None, json_body=None) -> Any:
-        headers, cookies = await self._headers_and_cookies()
+    async def _request(self, method: str, path: str, *, params=None, json_body=None, coin: Optional[str] = None) -> Any:
+        headers, cookies = await self._headers_and_cookies(coin=coin)
         url = BASE_URL + path
         async with curl_requests.AsyncSession(impersonate=self._impersonate, timeout=self._timeout) as s:
             if method.upper() == "GET":
@@ -566,7 +569,7 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
             },
             "qty": str(qty),
         }
-        data = await self._request(method, path, json_body=payload)
+        data = await self._request(method, path, json_body=payload, coin=coin)
         core = _extract_indicative_core(data if isinstance(data, dict) else json.loads(str(data)))
         self._cache_update_from_core(coin, core)  # [ADDED] 런타임 캐시 반영
         return core
@@ -584,7 +587,7 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
             raise ValueError("quote_id가 비어있습니다.")
         method, path = ENDPOINTS["create_market_order"]
         payload = {"quote_id": quote_id, "side": side.lower(), "max_slippage": max_slippage, "is_reduce_only": is_reduce_only}
-        return await self._request(method, path, json_body=payload)
+        return await self._request(method, path, json_body=payload, coin=coin)
 
     async def _create_limit_order(
         self,
@@ -609,7 +612,7 @@ class VariationalExchange(MultiPerpDexMixin, MultiPerpDex):
             "use_mark_price": bool(use_mark_price),
             "is_reduce_only": bool(is_reduce_only),
         }
-        return await self._request(method, path, json_body=payload)
+        return await self._request(method, path, json_body=payload, coin=coin)
     
     async def _fetch_positions_all(self):
         method, path = ENDPOINTS["fetch_position"]

@@ -15,6 +15,12 @@ symbol = symbol_create('grvt',coin)
 async def main():
     grvt = await create_exchange('grvt',GRVT_KEY)
 
+    av = await grvt.get_available_symbols()
+    print(av)
+
+    grvt = await grvt.close()
+    return
+
     price = await grvt.get_mark_price(symbol)
     print(price)
     while False:
