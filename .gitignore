@@ -39,3 +39,6 @@ perp_dex_hedge/
 
 working_proxies.txt
 **edgex-python-sdk**
+
+test_exchanges/*
+!test_exchanges/test_unified.py
