@@ -541,7 +541,7 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
             client_order_id: Custom order ID
         """
         if isinstance(amount,str):
-            amount = float(str)
+            amount = float(amount)
             
         payload = self._build_order_payload(
             symbol=symbol,
