@@ -132,6 +132,8 @@ class StandXWSClient(BaseWSClient):
 
     async def _resubscribe(self) -> None:
         """Resubscribe to all channels after reconnect"""
+        print(f"[StandXWSClient] ✓ Reconnected, resubscribing...")
+
         # 캐시된 데이터 초기화 (stale data 방지)
         self._prices.clear()
         self._orderbooks.clear()
@@ -149,6 +151,11 @@ class StandXWSClient(BaseWSClient):
         for ev in self._orderbook_events.values():
             ev.clear()
 
+        # WS 연결 확인
+        if not self._ws:
+            print(f"[StandXWSClient] ✗ _resubscribe failed: no websocket")
+            return
+
         # Re-authenticate if we had a token
         if self.jwt_token:
             auth_msg: Dict[str, Any] = {
@@ -159,20 +166,38 @@ class StandXWSClient(BaseWSClient):
                     ]
                 }
             }
-            await self._ws.send(_json_dumps(auth_msg))
+            try:
+                await self._ws.send(_json_dumps(auth_msg))
+            except Exception as e:
+                print(f"[StandXWSClient] ✗ Auth send failed: {e}")
+                return
+
             # Wait for auth
             for _ in range(50):
                 if self._authenticated:
                     break
                 await asyncio.sleep(0.1)
 
+            if not self._authenticated:
+                print(f"[StandXWSClient] ✗ Auth failed after reconnect")
+            else:
+                print(f"[StandXWSClient] ✓ Re-authenticated")
+
         # Resubscribe to price channels
         for symbol in self._price_subs:
-            await self._ws.send(_json_dumps({"subscribe": {"channel": "price", "symbol": symbol}}))
+            try:
+                await self._ws.send(_json_dumps({"subscribe": {"channel": "price", "symbol": symbol}}))
+            except Exception as e:
+                print(f"[StandXWSClient] ✗ Resubscribe price/{symbol} failed: {e}")
 
         # Resubscribe to orderbook channels
         for symbol in self._orderbook_subs:
-            await self._ws.send(_json_dumps({"subscribe": {"channel": "depth_book", "symbol": symbol}}))
+            try:
+                await self._ws.send(_json_dumps({"subscribe": {"channel": "depth_book", "symbol": symbol}}))
+            except Exception as e:
+                print(f"[StandXWSClient] ✗ Resubscribe orderbook/{symbol} failed: {e}")
+
+        print(f"[StandXWSClient] ✓ Resubscribed: {len(self._price_subs)} price, {len(self._orderbook_subs)} orderbook")
 
     def _build_ping_message(self) -> Optional[str]:
         """StandX doesn't use ping (server disconnects if ping is sent)"""
@@ -182,7 +207,10 @@ class StandXWSClient(BaseWSClient):
 
     async def connect(self) -> bool:
         """WS 연결 (base class 사용)"""
-        return await super().connect()
+        result = await super().connect()
+        if result:
+            print(f"[StandXWSClient] ✓ Connected to {self.WS_URL}")
+        return result
 
     async def close(self) -> None:
         """연결 종료 및 상태 초기화"""
@@ -615,22 +643,31 @@ class StandXOrderWSClient(BaseWSClient):
 
     async def _resubscribe(self) -> None:
         """Re-authenticate after reconnect"""
+        print(f"[StandXOrderWSClient] ✓ Reconnected, re-authenticating...")
+
         self._authenticated = False
         self._auth_event.clear()
 
         # Clear pending requests (they will timeout)
         async with self._pending_lock:
+            pending_count = len(self._pending_requests)
             for future in self._pending_requests.values():
                 if not future.done():
                     future.set_exception(RuntimeError("Connection lost during reconnect"))
             self._pending_requests.clear()
+            if pending_count > 0:
+                print(f"[StandXOrderWSClient] Cleared {pending_count} pending requests")
 
         # Generate new session ID
         self._session_id = str(uuid.uuid4())
 
         # Re-authenticate if we have a token
         if self.jwt_token:
-            await self._do_auth()
+            auth_ok = await self._do_auth()
+            if auth_ok:
+                print(f"[StandXOrderWSClient] ✓ Re-authenticated")
+            else:
+                print(f"[StandXOrderWSClient] ✗ Re-authentication failed")
 
     def _build_ping_message(self) -> Optional[str]:
         """StandX Order WS doesn't use ping"""
@@ -639,8 +676,14 @@ class StandXOrderWSClient(BaseWSClient):
     async def connect(self) -> bool:
         """Connect and authenticate"""
         result = await super().connect()
-        if result and self.jwt_token:
-            await self._do_auth()
+        if result:
+            print(f"[StandXOrderWSClient] ✓ Connected to {self.WS_URL}")
+            if self.jwt_token:
+                auth_ok = await self._do_auth()
+                if auth_ok:
+                    print(f"[StandXOrderWSClient] ✓ Authenticated")
+                else:
+                    print(f"[StandXOrderWSClient] ✗ Authentication failed")
         return result
 
     async def _do_auth(self) -> bool:
