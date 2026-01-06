@@ -348,10 +348,10 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
                 balance = self.ws_client.get_collateral()
                 if balance:
                     return self._parse_collateral(balance)
-        """
+        
         # REST fallback
         print("[StandXExchange] get_collateral: REST fallback")
-        
+        """
         return await self.get_collateral_rest()
 
     async def get_collateral_ws(self, timeout: float = 5.0) -> Dict[str, Any]:
