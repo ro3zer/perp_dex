@@ -408,18 +408,25 @@ class BaseWSClient(ABC):
         self._reconnecting = True
 
         delay = self.RECONNECT_MIN
+        attempt = 0
         try:
             while self._running:
-                msg = f"{self._log_prefix} reconnecting in {delay:.1f}s..."
+                attempt += 1
+                msg = f"{self._log_prefix} reconnecting in {delay:.1f}s... (attempt {attempt})"
                 print(msg)
                 logger.info(msg)
                 await asyncio.sleep(delay)
 
+                print(f"{self._log_prefix} attempting reconnect...")
                 if await self._do_reconnect():
-                    msg = f"{self._log_prefix} reconnected"
+                    msg = f"{self._log_prefix} ✓ reconnected successfully"
                     print(msg)
                     logger.info(msg)
                     return
+                else:
+                    msg = f"{self._log_prefix} ✗ reconnect attempt {attempt} failed, will retry..."
+                    print(msg)
+                    logger.warning(msg)
 
                 delay = min(self.RECONNECT_MAX, delay * 2.0) + random.uniform(0, 0.5)
         finally:

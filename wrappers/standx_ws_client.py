@@ -29,7 +29,10 @@ class StandXWSClient(BaseWSClient):
     """
 
     WS_URL = STANDX_WS_URL
-    PING_INTERVAL = None  # StandX는 ping 없어야 함 (ping 보내면 서버가 끊음)
+    # StandX ping 설정:
+    # - None: ping 없음 (기본값, 원래 StandX는 ping 보내면 서버가 끊음)
+    # - 숫자: ping 간격 (테스트용)
+    PING_INTERVAL = None  # 테스트: 30.0으로 변경해서 테스트 가능
     RECV_TIMEOUT = 60.0  # 60초간 메시지 없으면 재연결
     RECONNECT_MIN = 0.2
     RECONNECT_MAX = 30.0
@@ -200,8 +203,18 @@ class StandXWSClient(BaseWSClient):
         print(f"[StandXWSClient] ✓ Resubscribed: {len(self._price_subs)} price, {len(self._orderbook_subs)} orderbook")
 
     def _build_ping_message(self) -> Optional[str]:
-        """StandX doesn't use ping (server disconnects if ping is sent)"""
-        return None
+        """
+        StandX ping 메시지.
+        - PING_INTERVAL = None: ping 안 보냄 (기본값)
+        - PING_INTERVAL = 숫자: ping 보냄 (테스트용)
+
+        주의: 원래 StandX는 ping 보내면 서버가 끊는다고 했는데,
+        연결이 자꾸 끊기는 문제가 있어서 테스트 중.
+        """
+        if self.PING_INTERVAL is None:
+            return None
+        # StandX ping 형식 (추정) - 서버가 지원하는지 확인 필요
+        return '{"ping": "pong"}'
 
     # ==================== Connection Management ====================
 
@@ -589,7 +602,8 @@ class StandXOrderWSClient(BaseWSClient):
     """
 
     WS_URL = STANDX_ORDER_WS_URL
-    PING_INTERVAL = None  # StandX는 ping 없어야 함
+    # ping 설정 (테스트: 30.0으로 변경)
+    PING_INTERVAL = None  # 테스트: 30.0으로 변경해서 테스트 가능
     RECV_TIMEOUT = 60.0
     RECONNECT_MIN = 0.2
     RECONNECT_MAX = 30.0
@@ -670,8 +684,10 @@ class StandXOrderWSClient(BaseWSClient):
                 print(f"[StandXOrderWSClient] ✗ Re-authentication failed")
 
     def _build_ping_message(self) -> Optional[str]:
-        """StandX Order WS doesn't use ping"""
-        return None
+        """StandX Order WS ping (테스트용)"""
+        if self.PING_INTERVAL is None:
+            return None
+        return '{"ping": "pong"}'
 
     async def connect(self) -> bool:
         """Connect and authenticate"""
