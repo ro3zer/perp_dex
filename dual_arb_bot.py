@@ -32,15 +32,14 @@ class ArbitrageOrder:
     side: str  # 'buy' or 'sell' (GRVT 주문 방향)
     amount: float
     price: float
-    hold_minutes: float = 0  # 포지션 유지 시간 (분)
-    close_price: Optional[float] = None  # 청산 가격 (GRVT 지정가)
+    leverage: float = 1.0
+    hold_minutes: float = 0
+    close_price: Optional[float] = None
     grvt_order_id: Optional[str] = None
     variational_order_id: Optional[str] = None
     grvt_position_size: float = 0
     variational_position_size: float = 0
     status: str = "pending"
-    # status: pending, grvt_placed, grvt_filled, variational_filled,
-    #         holding, closing_grvt, closing_variational, completed, failed
 
 
 class ArbitrageBot:
@@ -54,27 +53,23 @@ class ArbitrageBot:
         self.running = False
         self.current_order: Optional[ArbitrageOrder] = None
         self.log_callback = log_callback or print
-        self.timer_callback = timer_callback  # 남은 시간 표시 콜백
-        self.status_callback = status_callback  # 상태 업데이트 콜백
-        self.poll_interval = 2.0  # 폴링 간격 (초)
+        self.timer_callback = timer_callback
+        self.status_callback = status_callback
+        self.poll_interval = 2.0
 
     def log(self, message: str):
-        """로그 메시지 출력"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_callback(f"[{timestamp}] {message}")
 
     def update_timer(self, remaining_seconds: int):
-        """타이머 업데이트"""
         if self.timer_callback:
             self.timer_callback(remaining_seconds)
 
     def update_status(self, status: str):
-        """상태 업데이트"""
         if self.status_callback:
             self.status_callback(status)
 
     async def initialize(self):
-        """거래소 초기화"""
         try:
             from mpdex import create_exchange, symbol_create
 
@@ -82,14 +77,12 @@ class ArbitrageBot:
                 from keys.pk_grvt import GRVT_KEY
             except ImportError:
                 self.log("keys/pk_grvt.py 파일을 찾을 수 없습니다.")
-                self.log("   keys/copy.pk_grvt.py를 pk_grvt.py로 복사하고 키를 입력하세요.")
                 return False
 
             try:
                 from keys.pk_variational import VARIATIONAL_KEY
             except ImportError:
                 self.log("keys/pk_variational.py 파일을 찾을 수 없습니다.")
-                self.log("   keys/copy.pk_variational.py를 pk_variational.py로 복사하고 키를 입력하세요.")
                 return False
 
             self.log("GRVT 연결 중...")
@@ -108,7 +101,6 @@ class ArbitrageBot:
             return False
 
     async def close(self):
-        """연결 종료"""
         try:
             if self.grvt:
                 await self.grvt.close()
@@ -128,7 +120,6 @@ class ArbitrageBot:
         return 'sell' if side.lower() == 'buy' else 'buy'
 
     async def get_mark_price(self, coin: str) -> Optional[float]:
-        """GRVT에서 현재 마크 가격 조회"""
         try:
             symbol = self.get_grvt_symbol(coin)
             price = await self.grvt.get_mark_price(symbol)
@@ -138,7 +129,6 @@ class ArbitrageBot:
             return None
 
     async def place_grvt_limit_order(self, coin: str, side: str, amount: float, price: float) -> Optional[str]:
-        """GRVT에 지정가 주문"""
         try:
             symbol = self.get_grvt_symbol(coin)
             self.log(f"GRVT 지정가 주문: {symbol} {side.upper()} {amount} @ {price}")
@@ -160,7 +150,6 @@ class ArbitrageBot:
             return None
 
     async def check_grvt_order_filled(self, coin: str, order_id: str) -> bool:
-        """GRVT 주문 체결 여부 확인"""
         try:
             symbol = self.get_grvt_symbol(coin)
             open_orders = await self.grvt.get_open_orders(symbol)
@@ -179,7 +168,6 @@ class ArbitrageBot:
             return False
 
     async def place_variational_market_order(self, coin: str, side: str, amount: float) -> Optional[str]:
-        """Variational에 시장가 주문"""
         try:
             symbol = self.get_variational_symbol(coin)
             self.log(f"Variational 시장가 주문: {symbol} {side.upper()} {amount}")
@@ -200,7 +188,6 @@ class ArbitrageBot:
             return None
 
     async def get_positions(self, coin: str) -> dict:
-        """양쪽 거래소 포지션 조회"""
         result = {"grvt": None, "variational": None}
 
         try:
@@ -218,7 +205,6 @@ class ArbitrageBot:
         return result
 
     async def get_collaterals(self) -> dict:
-        """양쪽 거래소 담보금 조회"""
         result = {"grvt": None, "variational": None}
 
         try:
@@ -234,20 +220,17 @@ class ArbitrageBot:
         return result
 
     async def verify_and_match_positions(self, coin: str, expected_amount: float, grvt_side: str) -> bool:
-        """양쪽 포지션 수량 확인 및 불일치 시 조정"""
         self.log("포지션 수량 확인 중...")
 
         positions = await self.get_positions(coin)
         grvt_pos = positions.get("grvt")
         var_pos = positions.get("variational")
 
-        # GRVT 포지션 수량
         grvt_size = 0.0
         if grvt_pos:
             grvt_size = float(grvt_pos.get('size', 0))
             self.current_order.grvt_position_size = grvt_size
 
-        # Variational 포지션 수량
         var_size = 0.0
         if var_pos:
             var_size = float(var_pos.get('size', 0))
@@ -255,27 +238,22 @@ class ArbitrageBot:
 
         self.log(f"GRVT 포지션: {grvt_size}, Variational 포지션: {var_size}")
 
-        # 수량 차이 확인 (소수점 오차 허용)
         diff = abs(grvt_size - var_size)
-        tolerance = expected_amount * 0.01  # 1% 허용
+        tolerance = expected_amount * 0.01
 
         if diff > tolerance:
             self.log(f"포지션 불일치 발견: 차이 {diff}")
 
-            # Variational 쪽 수량 조정 (GRVT 기준으로 맞춤)
             if var_size < grvt_size:
-                # Variational에 추가 주문
                 adjust_amount = grvt_size - var_size
                 opposite_side = self.get_opposite_side(grvt_side)
                 self.log(f"Variational 추가 주문: {opposite_side.upper()} {adjust_amount}")
                 await self.place_variational_market_order(coin, opposite_side, adjust_amount)
             elif var_size > grvt_size:
-                # Variational 일부 청산
                 adjust_amount = var_size - grvt_size
                 self.log(f"Variational 일부 청산: {grvt_side.upper()} {adjust_amount}")
                 await self.place_variational_market_order(coin, grvt_side, adjust_amount)
 
-            # 재확인
             await asyncio.sleep(2)
             positions = await self.get_positions(coin)
             grvt_pos = positions.get("grvt")
@@ -293,12 +271,8 @@ class ArbitrageBot:
         return True
 
     async def close_positions(self, coin: str, grvt_side: str, amount: float, close_price: float):
-        """양쪽 포지션 청산 (GRVT 지정가 → Variational 시장가)"""
-
-        # GRVT 청산 방향 (진입과 반대)
         grvt_close_side = self.get_opposite_side(grvt_side)
 
-        # 1. GRVT 지정가 청산 주문
         self.log(f"=== 포지션 청산 시작 ===")
         self.update_status("GRVT 청산 대기중")
         self.current_order.status = "closing_grvt"
@@ -312,7 +286,6 @@ class ArbitrageBot:
             self.log("GRVT 청산 주문 실패")
             return False
 
-        # 2. GRVT 청산 체결 대기
         self.log(f"GRVT 청산 체결 대기 중 (폴링 간격: {self.poll_interval}초)")
 
         while self.running:
@@ -328,11 +301,9 @@ class ArbitrageBot:
             self.log("사용자에 의해 중지됨")
             return False
 
-        # 3. Variational 시장가 청산
         self.update_status("Variational 청산중")
         self.current_order.status = "closing_variational"
 
-        # Variational 청산 방향 (GRVT와 같은 방향 = 반대 포지션 청산)
         var_close_side = grvt_side
         var_close_amount = self.current_order.variational_position_size or amount
 
@@ -350,8 +321,8 @@ class ArbitrageBot:
             return False
 
     async def start_arbitrage(self, coin: str, side: str, amount: float, price: float,
-                               hold_minutes: float = 0, close_price: Optional[float] = None):
-        """차익거래 시작"""
+                               leverage: float = 1.0, hold_minutes: float = 0,
+                               close_price: Optional[float] = None):
         if self.running:
             self.log("이미 실행 중입니다.")
             return
@@ -362,12 +333,12 @@ class ArbitrageBot:
             side=side,
             amount=amount,
             price=price,
+            leverage=leverage,
             hold_minutes=hold_minutes,
             close_price=close_price
         )
 
         try:
-            # 1. GRVT에 지정가 주문
             self.update_status("GRVT 주문 대기중")
             order_id = await self.place_grvt_limit_order(coin, side, amount, price)
             if order_id is None:
@@ -380,7 +351,6 @@ class ArbitrageBot:
 
             self.log(f"GRVT 주문 모니터링 시작 (폴링 간격: {self.poll_interval}초)")
 
-            # 2. GRVT 체결 대기
             while self.running and self.current_order.status == "grvt_placed":
                 is_filled = await self.check_grvt_order_filled(coin, order_id)
 
@@ -395,7 +365,6 @@ class ArbitrageBot:
                 self.log("사용자에 의해 중지됨")
                 return
 
-            # 3. Variational에 반대 포지션 시장가 주문
             if self.current_order.status == "grvt_filled":
                 opposite_side = self.get_opposite_side(side)
                 self.update_status("Variational 진입중")
@@ -413,11 +382,9 @@ class ArbitrageBot:
                     self.running = False
                     return
 
-            # 4. 포지션 수량 확인 및 매칭
-            await asyncio.sleep(2)  # 체결 안정화 대기
+            await asyncio.sleep(2)
             await self.verify_and_match_positions(coin, amount, side)
 
-            # 5. 포지션 유지 시간이 설정된 경우
             if hold_minutes > 0 and self.current_order.status == "variational_filled":
                 self.current_order.status = "holding"
                 total_seconds = int(hold_minutes * 60)
@@ -441,19 +408,16 @@ class ArbitrageBot:
                 self.update_timer(0)
                 self.log("유지 시간 종료!")
 
-                # 6. 청산 시작
                 if close_price is None:
-                    # 청산 가격이 없으면 현재 마크 가격 사용
                     mark_price = await self.get_mark_price(coin)
                     if mark_price:
-                        # 청산 방향에 따라 가격 조정
-                        if side == 'buy':  # 롱 청산 = 매도
-                            close_price = mark_price * 0.999  # 약간 낮게
-                        else:  # 숏 청산 = 매수
-                            close_price = mark_price * 1.001  # 약간 높게
+                        if side == 'buy':
+                            close_price = mark_price * 0.999
+                        else:
+                            close_price = mark_price * 1.001
                         self.log(f"청산 가격 자동 설정: {close_price:.2f}")
                     else:
-                        close_price = price  # 진입가 사용
+                        close_price = price
 
                 success = await self.close_positions(coin, side, amount, close_price)
 
@@ -466,7 +430,6 @@ class ArbitrageBot:
                     self.update_status("청산 실패")
 
             else:
-                # 유지 시간 없이 진입만 하는 경우
                 self.current_order.status = "completed"
                 self.update_status("진입 완료 (수동 청산 필요)")
                 self.log("양쪽 포지션 진입 완료! (수동 청산 필요)")
@@ -479,14 +442,12 @@ class ArbitrageBot:
             self.running = False
 
     async def stop(self):
-        """차익거래 중지"""
         if not self.running:
             return
 
         self.running = False
         self.log("중지 요청됨...")
 
-        # GRVT 주문 취소 (대기 중인 경우)
         if self.current_order and self.current_order.status == "grvt_placed":
             try:
                 symbol = self.get_grvt_symbol(self.current_order.coin)
@@ -502,7 +463,7 @@ class ArbitrageGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("GRVT-Variational 차익거래 봇")
-        self.root.geometry("750x750")
+        self.root.geometry("750x800")
         self.root.resizable(True, True)
 
         self.bot: Optional[ArbitrageBot] = None
@@ -513,11 +474,10 @@ class ArbitrageGUI:
         self._start_async_loop()
 
     def _setup_ui(self):
-        """UI 구성"""
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # === 연결 상태 프레임 ===
+        # === 연결 상태 ===
         conn_frame = ttk.LabelFrame(main_frame, text="연결 상태", padding="5")
         conn_frame.pack(fill=tk.X, pady=(0, 10))
 
@@ -527,7 +487,7 @@ class ArbitrageGUI:
         self.btn_connect = ttk.Button(conn_frame, text="연결", command=self._on_connect)
         self.btn_connect.pack(side=tk.RIGHT, padx=5)
 
-        # === 주문 설정 프레임 ===
+        # === 주문 설정 ===
         order_frame = ttk.LabelFrame(main_frame, text="주문 설정 (GRVT 지정가 진입)", padding="10")
         order_frame.pack(fill=tk.X, pady=(0, 10))
 
@@ -538,51 +498,85 @@ class ArbitrageGUI:
         self.coin_var = tk.StringVar(value="BTC")
         coin_combo = ttk.Combobox(row1, textvariable=self.coin_var,
                                    values=["BTC", "ETH", "SOL", "ARB", "DOGE", "XRP", "LINK", "AVAX"],
-                                   width=15)
+                                   width=12)
         coin_combo.pack(side=tk.LEFT, padx=5)
 
-        ttk.Label(row1, text="방향:", width=10).pack(side=tk.LEFT, padx=(20, 0))
+        ttk.Label(row1, text="방향:", width=8).pack(side=tk.LEFT, padx=(10, 0))
         self.side_var = tk.StringVar(value="buy")
         side_frame = ttk.Frame(row1)
         side_frame.pack(side=tk.LEFT)
         ttk.Radiobutton(side_frame, text="롱(Buy)", variable=self.side_var, value="buy").pack(side=tk.LEFT)
-        ttk.Radiobutton(side_frame, text="숏(Sell)", variable=self.side_var, value="sell").pack(side=tk.LEFT, padx=10)
+        ttk.Radiobutton(side_frame, text="숏(Sell)", variable=self.side_var, value="sell").pack(side=tk.LEFT, padx=5)
 
-        # 수량 & 진입가격
+        # 진입가격 & 레버리지
         row2 = ttk.Frame(order_frame)
         row2.pack(fill=tk.X, pady=2)
-        ttk.Label(row2, text="수량:", width=10).pack(side=tk.LEFT)
-        self.amount_var = tk.StringVar(value="0.001")
-        ttk.Entry(row2, textvariable=self.amount_var, width=18).pack(side=tk.LEFT, padx=5)
-
-        ttk.Label(row2, text="진입가격:", width=10).pack(side=tk.LEFT, padx=(20, 0))
+        ttk.Label(row2, text="진입가격:", width=10).pack(side=tk.LEFT)
         self.price_var = tk.StringVar(value="95000")
-        ttk.Entry(row2, textvariable=self.price_var, width=18).pack(side=tk.LEFT, padx=5)
+        ttk.Entry(row2, textvariable=self.price_var, width=15).pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(row2, text="레버리지:", width=10).pack(side=tk.LEFT, padx=(10, 0))
+        self.leverage_var = tk.StringVar(value="10")
+        ttk.Entry(row2, textvariable=self.leverage_var, width=8).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row2, text="x").pack(side=tk.LEFT)
+
+        # 수량 입력 방식 선택
+        row3 = ttk.Frame(order_frame)
+        row3.pack(fill=tk.X, pady=5)
+
+        self.input_mode_var = tk.StringVar(value="qty")
+        ttk.Radiobutton(row3, text="수량으로 입력", variable=self.input_mode_var,
+                        value="qty", command=self._on_input_mode_change).pack(side=tk.LEFT)
+        ttk.Radiobutton(row3, text="USDC로 입력", variable=self.input_mode_var,
+                        value="usdc", command=self._on_input_mode_change).pack(side=tk.LEFT, padx=10)
+
+        # 수량/USDC 입력
+        row4 = ttk.Frame(order_frame)
+        row4.pack(fill=tk.X, pady=2)
+
+        self.qty_label = ttk.Label(row4, text="수량:", width=10)
+        self.qty_label.pack(side=tk.LEFT)
+        self.amount_var = tk.StringVar(value="0.001")
+        self.amount_entry = ttk.Entry(row4, textvariable=self.amount_var, width=15)
+        self.amount_entry.pack(side=tk.LEFT, padx=5)
+
+        self.usdc_label = ttk.Label(row4, text="USDC:", width=10)
+        self.usdc_var = tk.StringVar(value="100")
+        self.usdc_entry = ttk.Entry(row4, textvariable=self.usdc_var, width=15)
+
+        # 계산된 수량 표시
+        self.calc_label = ttk.Label(row4, text="", foreground="blue")
+        self.calc_label.pack(side=tk.LEFT, padx=10)
+
+        # USDC 입력 시 수량 자동 계산
+        self.usdc_var.trace_add("write", self._on_usdc_change)
+        self.price_var.trace_add("write", self._on_usdc_change)
+        self.leverage_var.trace_add("write", self._on_usdc_change)
 
         # === 유지 시간 & 청산 설정 ===
         hold_frame = ttk.LabelFrame(main_frame, text="포지션 유지 & 청산 설정", padding="10")
         hold_frame.pack(fill=tk.X, pady=(0, 10))
 
-        row3 = ttk.Frame(hold_frame)
-        row3.pack(fill=tk.X, pady=2)
-        ttk.Label(row3, text="유지 시간:", width=10).pack(side=tk.LEFT)
+        row5 = ttk.Frame(hold_frame)
+        row5.pack(fill=tk.X, pady=2)
+        ttk.Label(row5, text="유지 시간:", width=10).pack(side=tk.LEFT)
         self.hold_var = tk.StringVar(value="10")
-        ttk.Entry(row3, textvariable=self.hold_var, width=8).pack(side=tk.LEFT, padx=5)
-        ttk.Label(row3, text="분 (0=자동청산 안함)").pack(side=tk.LEFT)
+        ttk.Entry(row5, textvariable=self.hold_var, width=8).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row5, text="분 (0=자동청산 안함)").pack(side=tk.LEFT)
 
-        ttk.Label(row3, text="청산가격:", width=10).pack(side=tk.LEFT, padx=(20, 0))
+        ttk.Label(row5, text="청산가격:", width=10).pack(side=tk.LEFT, padx=(20, 0))
         self.close_price_var = tk.StringVar(value="")
-        ttk.Entry(row3, textvariable=self.close_price_var, width=18).pack(side=tk.LEFT, padx=5)
-        ttk.Label(row3, text="(빈칸=자동)").pack(side=tk.LEFT)
+        ttk.Entry(row5, textvariable=self.close_price_var, width=15).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row5, text="(빈칸=자동)").pack(side=tk.LEFT)
 
-        row4 = ttk.Frame(hold_frame)
-        row4.pack(fill=tk.X, pady=2)
-        ttk.Label(row4, text="폴링 간격:", width=10).pack(side=tk.LEFT)
+        row6 = ttk.Frame(hold_frame)
+        row6.pack(fill=tk.X, pady=2)
+        ttk.Label(row6, text="폴링 간격:", width=10).pack(side=tk.LEFT)
         self.poll_var = tk.StringVar(value="2.0")
-        ttk.Entry(row4, textvariable=self.poll_var, width=8).pack(side=tk.LEFT, padx=5)
-        ttk.Label(row4, text="초").pack(side=tk.LEFT)
+        ttk.Entry(row6, textvariable=self.poll_var, width=8).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row6, text="초").pack(side=tk.LEFT)
 
-        # === 실행 버튼 프레임 ===
+        # === 실행 버튼 ===
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(fill=tk.X, pady=(0, 10))
 
@@ -595,7 +589,10 @@ class ArbitrageGUI:
         self.btn_refresh = ttk.Button(btn_frame, text="포지션 조회", command=self._on_refresh, state=tk.DISABLED)
         self.btn_refresh.pack(side=tk.RIGHT, padx=5)
 
-        # === 상태 & 타이머 프레임 ===
+        self.btn_calc = ttk.Button(btn_frame, text="수량 계산", command=self._on_calc)
+        self.btn_calc.pack(side=tk.RIGHT, padx=5)
+
+        # === 상태 & 타이머 ===
         status_frame = ttk.LabelFrame(main_frame, text="현재 상태", padding="5")
         status_frame.pack(fill=tk.X, pady=(0, 10))
 
@@ -608,7 +605,7 @@ class ArbitrageGUI:
         self.timer_label = ttk.Label(status_row, text="", font=("", 14, "bold"), foreground="blue")
         self.timer_label.pack(side=tk.RIGHT, padx=10)
 
-        # === 포지션 정보 프레임 ===
+        # === 포지션 정보 ===
         pos_frame = ttk.LabelFrame(main_frame, text="포지션 정보", padding="5")
         pos_frame.pack(fill=tk.X, pady=(0, 10))
 
@@ -637,21 +634,74 @@ class ArbitrageGUI:
         self.var_coll_label = ttk.Label(coll_row, text="-")
         self.var_coll_label.pack(side=tk.LEFT)
 
-        # === 로그 프레임 ===
+        # === 로그 ===
         log_frame = ttk.LabelFrame(main_frame, text="로그", padding="5")
         log_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=10, state=tk.DISABLED,
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=8, state=tk.DISABLED,
                                                    font=("Consolas", 9))
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
-        # 설명 라벨
-        desc_text = "GRVT 지정가 체결 -> Variational 반대 포지션 진입 -> 유지 시간 후 자동 청산"
-        desc_label = ttk.Label(main_frame, text=desc_text, foreground="gray", font=("", 9))
-        desc_label.pack(pady=(5, 0))
+        # 설명
+        desc_text = "GRVT 지정가 체결 -> Variational 반대 포지션 -> 유지 시간 후 자동 청산"
+        ttk.Label(main_frame, text=desc_text, foreground="gray", font=("", 9)).pack(pady=(5, 0))
+
+    def _on_input_mode_change(self):
+        """입력 방식 변경 시 UI 업데이트"""
+        mode = self.input_mode_var.get()
+        if mode == "qty":
+            self.qty_label.pack(side=tk.LEFT)
+            self.amount_entry.pack(side=tk.LEFT, padx=5)
+            self.usdc_label.pack_forget()
+            self.usdc_entry.pack_forget()
+            self.calc_label.config(text="")
+        else:
+            self.qty_label.pack_forget()
+            self.amount_entry.pack_forget()
+            self.usdc_label.pack(side=tk.LEFT)
+            self.usdc_entry.pack(side=tk.LEFT, padx=5)
+            self._calculate_quantity()
+
+    def _on_usdc_change(self, *args):
+        """USDC, 가격, 레버리지 변경 시 수량 계산"""
+        if self.input_mode_var.get() == "usdc":
+            self._calculate_quantity()
+
+    def _calculate_quantity(self) -> Optional[float]:
+        """USDC와 레버리지로 수량 계산"""
+        try:
+            usdc = float(self.usdc_var.get())
+            price = float(self.price_var.get())
+            leverage = float(self.leverage_var.get())
+
+            if price <= 0 or leverage <= 0:
+                self.calc_label.config(text="")
+                return None
+
+            # 포지션 가치 = USDC × 레버리지
+            # 수량 = 포지션 가치 / 가격
+            position_value = usdc * leverage
+            quantity = position_value / price
+
+            self.calc_label.config(text=f"= {quantity:.6f} 개")
+            return quantity
+
+        except ValueError:
+            self.calc_label.config(text="")
+            return None
+
+    def _on_calc(self):
+        """수량 계산 버튼 클릭"""
+        qty = self._calculate_quantity()
+        if qty:
+            self.log(f"계산된 수량: {qty:.6f}")
+            if self.input_mode_var.get() == "usdc":
+                usdc = self.usdc_var.get()
+                leverage = self.leverage_var.get()
+                price = self.price_var.get()
+                self.log(f"  USDC: {usdc} × 레버리지: {leverage}x / 가격: {price} = {qty:.6f}")
 
     def _start_async_loop(self):
-        """비동기 이벤트 루프 스레드 시작"""
         def run_loop():
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
@@ -661,13 +711,11 @@ class ArbitrageGUI:
         self.async_thread.start()
 
     def _run_async(self, coro):
-        """코루틴을 비동기 스레드에서 실행"""
         if self.loop:
             return asyncio.run_coroutine_threadsafe(coro, self.loop)
         return None
 
     def log(self, message: str):
-        """로그 추가"""
         def _update():
             self.log_text.config(state=tk.NORMAL)
             self.log_text.insert(tk.END, message + "\n")
@@ -676,13 +724,11 @@ class ArbitrageGUI:
         self.root.after(0, _update)
 
     def _update_status(self, text: str, color: str = "black"):
-        """상태 라벨 업데이트"""
         def _update():
             self.status_label.config(text=text, foreground=color)
         self.root.after(0, _update)
 
     def _update_timer(self, remaining_seconds: int):
-        """타이머 업데이트"""
         def _update():
             if remaining_seconds > 0:
                 mins, secs = divmod(remaining_seconds, 60)
@@ -692,7 +738,6 @@ class ArbitrageGUI:
         self.root.after(0, _update)
 
     def _on_connect(self):
-        """연결 버튼 클릭"""
         self.btn_connect.config(state=tk.DISABLED)
         self.conn_status.config(text="연결 중...", foreground="blue")
         self.log("거래소 연결 중...")
@@ -721,14 +766,23 @@ class ArbitrageGUI:
         self._run_async(connect())
 
     def _on_start(self):
-        """시작 버튼 클릭"""
         try:
             coin = self.coin_var.get().strip().upper()
             side = self.side_var.get()
-            amount = float(self.amount_var.get())
             price = float(self.price_var.get())
+            leverage = float(self.leverage_var.get())
             hold_minutes = float(self.hold_var.get())
             poll_interval = float(self.poll_var.get())
+
+            # 수량 결정
+            if self.input_mode_var.get() == "qty":
+                amount = float(self.amount_var.get())
+            else:
+                # USDC로 수량 계산
+                usdc = float(self.usdc_var.get())
+                position_value = usdc * leverage
+                amount = position_value / price
+                self.log(f"USDC {usdc} × {leverage}x = 포지션 ${position_value:.2f} = {amount:.6f} {coin}")
 
             close_price_str = self.close_price_var.get().strip()
             close_price = float(close_price_str) if close_price_str else None
@@ -739,8 +793,8 @@ class ArbitrageGUI:
             if price <= 0:
                 messagebox.showerror("오류", "가격은 0보다 커야 합니다.")
                 return
-            if hold_minutes < 0:
-                messagebox.showerror("오류", "유지 시간은 0 이상이어야 합니다.")
+            if leverage <= 0:
+                messagebox.showerror("오류", "레버리지는 0보다 커야 합니다.")
                 return
 
         except ValueError:
@@ -755,17 +809,13 @@ class ArbitrageGUI:
         self._update_status(f"실행 중: GRVT {side.upper()} -> Variational {opposite}", "blue")
 
         self.log(f"=== 차익거래 시작 ===")
-        self.log(f"GRVT 진입: {coin} {side.upper()} {amount} @ {price}")
-        self.log(f"Variational 진입: {coin} {opposite} {amount} (시장가)")
+        self.log(f"GRVT 진입: {coin} {side.upper()} {amount:.6f} @ {price} (레버리지: {leverage}x)")
+        self.log(f"Variational 진입: {coin} {opposite} {amount:.6f} (시장가)")
         if hold_minutes > 0:
             self.log(f"유지 시간: {hold_minutes}분")
-            if close_price:
-                self.log(f"청산 가격: {close_price}")
-            else:
-                self.log("청산 가격: 자동 (마크 가격 기준)")
 
         async def run():
-            await self.bot.start_arbitrage(coin, side, amount, price, hold_minutes, close_price)
+            await self.bot.start_arbitrage(coin, side, amount, price, leverage, hold_minutes, close_price)
 
             def update_ui():
                 self.btn_start.config(state=tk.NORMAL)
@@ -786,7 +836,6 @@ class ArbitrageGUI:
         self._run_async(run())
 
     def _on_stop(self):
-        """중지 버튼 클릭"""
         if self.bot:
             self._run_async(self.bot.stop())
         self.btn_stop.config(state=tk.DISABLED)
@@ -794,7 +843,6 @@ class ArbitrageGUI:
         self._update_timer(0)
 
     def _on_refresh(self):
-        """포지션 조회 버튼 클릭"""
         coin = self.coin_var.get().strip().upper()
         self.log(f"{coin} 포지션 및 담보금 조회 중...")
 
@@ -846,12 +894,10 @@ class ArbitrageGUI:
         self._run_async(refresh())
 
     def run(self):
-        """GUI 실행"""
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.mainloop()
 
     def _on_close(self):
-        """창 닫기"""
         if self.bot and self.bot.running:
             if not messagebox.askyesno("확인", "차익거래가 실행 중입니다. 종료하시겠습니까?"):
                 return
@@ -866,7 +912,6 @@ class ArbitrageGUI:
 
 
 def main():
-    """메인 함수"""
     import os
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
