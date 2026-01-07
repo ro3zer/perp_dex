@@ -43,6 +43,9 @@ async function initAppKit() {
   appKit.subscribeAccount((account) => {
     if (account.address) {
       onConnected(account.address)
+    } else if (connectedAddress) {
+      // Was connected, now disconnected
+      onDisconnected()
     }
   })
 }
@@ -53,7 +56,34 @@ function onConnected(address) {
   $('#prepareBtn').disabled = false
   $('#connectBtn').textContent = 'Connected'
   $('#connectBtn').disabled = true
+  $('#disconnectBtn').classList.remove('hidden')
   showStatus('Wallet connected: ' + address, 'success')
+}
+
+function onDisconnected() {
+  connectedAddress = null
+  signedData = null
+  $('#address').value = ''
+  $('#message').value = ''
+  $('#prepareBtn').disabled = true
+  $('#signBtn').disabled = true
+  $('#connectBtn').textContent = 'Connect Wallet'
+  $('#connectBtn').disabled = false
+  $('#disconnectBtn').classList.add('hidden')
+  showStatus('Wallet disconnected', 'info')
+}
+
+// Disconnect wallet
+$('#disconnectBtn').onclick = async () => {
+  try {
+    if (appKit) {
+      await appKit.disconnect()
+    }
+    onDisconnected()
+  } catch (e) {
+    showStatus('Disconnect failed: ' + e.message, 'error')
+    console.error(e)
+  }
 }
 
 // Connect wallet

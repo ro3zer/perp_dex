@@ -44,6 +44,9 @@
     .btn-primary { background: #3b82f6; color: white; }
     .btn-primary:hover:not(:disabled) { background: #2563eb; }
     .btn-secondary { background: #6b7280; color: white; }
+    .btn-danger { background: #ef4444; color: white; }
+    .btn-danger:hover:not(:disabled) { background: #dc2626; }
+    .hidden { display: none !important; }
     .status { padding: 12px; border-radius: 8px; margin-top: 16px; display: none; }
     .status.success { background: #d1fae5; color: #065f46; display: block; }
     .status.error { background: #fee2e2; color: #991b1b; display: block; }
@@ -75,6 +78,7 @@
       <label>Connect Wallet</label>
       <div class="btn-group">
         <button id="connectBtn" class="btn-primary">Connect Wallet</button>
+        <button id="disconnectBtn" class="btn-danger hidden">Disconnect</button>
       </div>
     </div>
 
