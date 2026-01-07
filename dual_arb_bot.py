@@ -8,6 +8,12 @@ GRVT에서 지정가 주문이 체결되면 Variational에서 반대 포지션�
 """
 
 import asyncio
+import sys
+
+# Windows에서 aiodns SelectorEventLoop 문제 해결
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 from dataclasses import dataclass
