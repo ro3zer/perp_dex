@@ -200,7 +200,16 @@ class StandXWSClient(BaseWSClient):
             except Exception as e:
                 print(f"[StandXWSClient] ✗ Resubscribe orderbook/{symbol} failed: {e}")
 
-        print(f"[StandXWSClient] ✓ Resubscribed: {len(self._price_subs)} price, {len(self._orderbook_subs)} orderbook")
+        # Resubscribe to user channels (position, order)
+        # Note: balance is already included in auth message
+        user_channels_to_resub = [ch for ch in self._user_subs if ch not in ("balance",)]
+        for channel in user_channels_to_resub:
+            try:
+                await self._ws.send(_json_dumps({"subscribe": {"channel": channel}}))
+            except Exception as e:
+                print(f"[StandXWSClient] ✗ Resubscribe {channel} failed: {e}")
+
+        print(f"[StandXWSClient] ✓ Resubscribed: {len(self._price_subs)} price, {len(self._orderbook_subs)} orderbook, {len(user_channels_to_resub)} user")
 
     def _build_ping_message(self) -> Optional[str]:
         """
