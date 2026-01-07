@@ -472,125 +472,124 @@ class VariationalAuth:
     # HTML (브라우저 지갑 서명 UI)
     # ----------------------------
     def _login_html(self, default_address: str) -> str:
-        """
-        최소 UI: 계정 요청 -> 메시지 수신 -> personal_sign -> 제출
-        """
+        """Load login UI HTML from built file (with Reown AppKit for WalletConnect)"""
+        # Try to load from built dist file
+        module_dir = Path(__file__).parent
+        dist_html = module_dir / "variational_login_ui" / "dist" / "index.html"
+
+        if dist_html.exists():
+            try:
+                return dist_html.read_text(encoding="utf-8")
+            except Exception as e:
+                print(f"[variational] Failed to load built HTML: {e}")
+
+        # Fallback to minimal HTML if build not available
+        return self._login_html_fallback(default_address)
+
+    def _login_html_fallback(self, default_address: str) -> str:
+        """Minimal fallback HTML (browser wallet only, no WalletConnect)"""
         da = default_address
         return f"""<!doctype html>
-<html lang="ko">
+<html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <title>Variational Login</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif; padding: 16px; }}
-    .row {{ margin: 8px 0; }}
-    input[type=text] {{ width: 100%; padding: 8px; }}
-    textarea {{ width: 100%; height: 160px; }}
-    button {{ padding: 10px 16px; cursor: pointer; }}
-    code, pre {{ background: #f5f5f7; padding: 8px; display: block; border-radius: 6px; overflow-x: auto; }}
-  </style>
+<meta charset="utf-8"/>
+<title>Variational Login</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<style>
+body {{ font-family: system-ui, sans-serif; padding: 24px; max-width: 500px; margin: 0 auto; background: #f5f5f5; }}
+.card {{ background: white; padding: 24px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+.row {{ margin: 16px 0; }}
+input, textarea {{ width: 100%; padding: 10px; font-size: 14px; font-family: monospace; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }}
+textarea {{ height: 100px; resize: vertical; }}
+.btn-group {{ display: flex; gap: 8px; flex-wrap: wrap; }}
+button {{ padding: 12px 20px; cursor: pointer; font-size: 14px; border: none; border-radius: 8px; font-weight: 500; }}
+button:disabled {{ opacity: 0.5; cursor: not-allowed; }}
+.btn-primary {{ background: #8b5cf6; color: white; }}
+.btn-secondary {{ background: #6b7280; color: white; }}
+.status {{ padding: 12px; border-radius: 8px; margin-top: 16px; display: none; }}
+.status.success {{ background: #d1fae5; color: #065f46; display: block; }}
+.status.error {{ background: #fee2e2; color: #991b1b; display: block; }}
+.status.info {{ background: #dbeafe; color: #1e40af; display: block; }}
+h2 {{ margin: 0 0 20px; color: #1f2937; }}
+label {{ font-weight: 500; display: block; margin-bottom: 6px; color: #374151; }}
+</style>
 </head>
 <body>
-  <h2>Variational Login (TreadFi-style)</h2>
-  <div class="row">
-    <label>Address</label>
-    <input id="addr" type="text" value="{da}" placeholder="0x..."/>
-  </div>
-  <div class="row">
-    <button id="connect">지갑 연결 & 메시지 요청</button>
-    <button id="sign" disabled>메시지 서명</button>
-    <button id="submit" disabled>로그인 제출</button>
-  </div>
-  <div class="row">
-    <label>서명할 메시지</label>
-    <textarea id="message" readonly></textarea>
-  </div>
-  <div class="row">
-    <label>서명값</label>
-    <textarea id="signature" readonly></textarea>
-  </div>
-  <div class="row">
-    <label>결과</label>
-    <pre id="out"></pre>
-  </div>
-
+<div class="card">
+<h2>Variational Login</h2>
+<div class="row">
+    <label>Wallet Address</label>
+    <input id="address" type="text" value="{da}" readonly />
+</div>
+<div class="row">
+    <div class="btn-group">
+        <button id="connectBtn" class="btn-primary">Connect Wallet</button>
+        <button id="prepareBtn" class="btn-secondary" disabled>Get Message</button>
+        <button id="signBtn" class="btn-primary" disabled>Sign & Login</button>
+    </div>
+</div>
+<div class="row">
+    <label>Message to Sign</label>
+    <textarea id="message" readonly placeholder="Connect wallet first..."></textarea>
+</div>
+<div id="statusBox" class="status"></div>
+</div>
 <script>
-const $ = (s) => document.querySelector(s);
-const out = (o) => $('#out').textContent = typeof o === 'string' ? o : JSON.stringify(o, null, 2);
-
-async function fetchSigningData(address) {{
-  const qs = new URLSearchParams({{address}});
-  const r = await fetch(`/signing-data?${{qs.toString()}}`);
-  if (!r.ok) throw new Error(await r.text());
-  const j = await r.json();
-  return j;
-}}
-
-async function personalSign(address, message) {{
-  if (!window.ethereum) throw new Error('window.ethereum not found. 브라우저 지갑이 필요합니다.');
-  try {{
-    const sig = await window.ethereum.request({{ method: 'personal_sign', params: [message, address] }});
-    return sig;
-  }} catch (e1) {{
+const $ = s => document.querySelector(s);
+let signingMessage = null, connectedAddress = null;
+const showStatus = (msg, type) => {{ const b = $('#statusBox'); b.textContent = msg; b.className = 'status ' + type; }};
+$('#connectBtn').onclick = async () => {{
     try {{
-      const sig = await window.ethereum.request({{ method: 'eth_personal_sign', params: [message, address] }});
-      return sig;
-    }} catch (e2) {{
-      const sig = await window.ethereum.request({{ method: 'personal_sign', params: [address, message] }});
-      return sig;
-    }}
-  }}
-}}
-
-$('#connect').onclick = async () => {{
-  try {{
+        if (!window.ethereum) throw new Error('No wallet detected');
+        const accounts = await window.ethereum.request({{ method: 'eth_requestAccounts' }});
+        connectedAddress = accounts[0];
+        $('#address').value = connectedAddress;
+        $('#prepareBtn').disabled = false;
+        $('#connectBtn').disabled = true;
+        showStatus('Connected: ' + connectedAddress, 'success');
+    }} catch (e) {{ showStatus('Connect failed: ' + e.message, 'error'); }}
+}};
+$('#prepareBtn').onclick = async () => {{
+    try {{
+        showStatus('Fetching message...', 'info');
+        const params = new URLSearchParams({{ address: connectedAddress }});
+        const r = await fetch(`/signing-data?${{params.toString()}}`);
+        const j = await r.json();
+        if (j.error) throw new Error(j.error);
+        signingMessage = j.message;
+        $('#message').value = j.message;
+        $('#signBtn').disabled = false;
+        showStatus('Ready to sign', 'success');
+    }} catch (e) {{ showStatus('Failed: ' + e.message, 'error'); }}
+}};
+$('#signBtn').onclick = async () => {{
+    try {{
+        if (!connectedAddress || !signingMessage) throw new Error('Connect wallet and get message first');
+        const message = $('#message').value;
+        showStatus('Please sign in your wallet...', 'info');
+        const signature = await window.ethereum.request({{ method: 'personal_sign', params: [message, connectedAddress] }});
+        showStatus('Submitting...', 'info');
+        const r = await fetch('/submit', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: JSON.stringify({{ address: connectedAddress, signed_message: signature }}) }});
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || 'Login failed');
+        showStatus('Login successful! You can close this tab.', 'success');
+        $('#signBtn').disabled = true;
+    }} catch (e) {{ showStatus('Failed: ' + e.message, 'error'); }}
+}};
+window.addEventListener('load', async () => {{
     if (window.ethereum) {{
-      await window.ethereum.request({{ method: 'eth_requestAccounts' }});
-      const accounts = await window.ethereum.request({{ method: 'eth_accounts' }});
-      if (accounts && accounts.length > 0) {{
-        $('#addr').value = accounts[0];
-      }}
+        try {{
+            const accounts = await window.ethereum.request({{ method: 'eth_accounts' }});
+            if (accounts.length > 0) {{
+                connectedAddress = accounts[0];
+                $('#address').value = connectedAddress;
+                $('#prepareBtn').disabled = false;
+                $('#connectBtn').disabled = true;
+                showStatus('Connected: ' + connectedAddress, 'success');
+            }}
+        }} catch (e) {{}}
     }}
-    const addr = $('#addr').value.trim();
-    if (!addr) throw new Error('주소가 비어있습니다.');
-    const data = await fetchSigningData(addr);
-    $('#message').value = data.message || '';
-    $('#sign').disabled = false;
-    out('메시지 수신 완료');
-  }} catch (e) {{
-    out(e.message || String(e));
-  }}
-}};
-
-$('#sign').onclick = async () => {{
-  try {{
-    const addr = $('#addr').value.trim();
-    const msg = $('#message').value;
-    const sig = await personalSign(addr, msg);
-    $('#signature').value = sig;
-    $('#submit').disabled = false;
-    out('서명 완료');
-  }} catch (e) {{
-    out(e.message || String(e));
-  }}
-}};
-
-$('#submit').onclick = async () => {{
-  try {{
-    const addr = $('#addr').value.trim();
-    const sig = $('#signature').value.trim();
-    const r = await fetch('/submit', {{
-      method: 'POST',
-      headers: {{ 'content-type': 'application/json' }},
-      body: JSON.stringify({{ address: addr, signed_message: sig }})
-    }});
-    const j = await r.json();
-    out(j);
-  }} catch (e) {{
-    out(e.message || String(e));
-  }}
-}};
+}});
 </script>
 </body>
 </html>

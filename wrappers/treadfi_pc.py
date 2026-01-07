@@ -216,72 +216,109 @@ class TreadfiPcExchange(MultiPerpDexMixin, MultiPerpDex):
 	# TreadFi Login (from treadfi_hl.py)
 	# ----------------------------
 	def _login_html(self) -> str:
-		return f"""<!DOCTYPE html>
+		"""Load login UI HTML from built file (with Reown AppKit for WalletConnect)"""
+		from pathlib import Path
+		module_dir = Path(__file__).parent
+		dist_html = module_dir / "treadfi_login_ui" / "dist" / "index.html"
+
+		if dist_html.exists():
+			try:
+				return dist_html.read_text(encoding="utf-8")
+			except Exception as e:
+				print(f"[treadfi_pc] Failed to load built HTML: {e}")
+
+		# Fallback to minimal HTML
+		return self._login_html_fallback()
+
+	def _login_html_fallback(self) -> str:
+		"""Minimal fallback HTML (browser wallet only, no WalletConnect)"""
+		return """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>TreadFi Sign-In</title>
+<title>TreadFi Login</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
-body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; }}
-.row {{ margin: 8px 0; }}
-input, textarea, button {{ font-size: 14px; }}
-input, textarea {{ width: 100%; max-width: 560px; }}
-.addr {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+body { font-family: system-ui, sans-serif; padding: 24px; max-width: 500px; margin: 0 auto; background: #f5f5f5; }
+.card { background: white; padding: 24px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+.row { margin: 16px 0; }
+input, textarea { width: 100%; padding: 10px; font-size: 14px; font-family: monospace; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
+textarea { height: 80px; resize: vertical; }
+.btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
+button { padding: 12px 20px; cursor: pointer; font-size: 14px; border: none; border-radius: 8px; font-weight: 500; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: #10b981; color: white; }
+.btn-secondary { background: #6b7280; color: white; }
+.status { padding: 12px; border-radius: 8px; margin-top: 16px; display: none; }
+.status.success { background: #d1fae5; color: #065f46; display: block; }
+.status.error { background: #fee2e2; color: #991b1b; display: block; }
+.status.info { background: #dbeafe; color: #1e40af; display: block; }
+h2 { margin: 0 0 20px; color: #1f2937; }
+label { font-weight: 500; display: block; margin-bottom: 6px; color: #374151; }
 </style>
 </head>
 <body>
-<h2>TreadFi Login (Pacifica)</h2>
-<div class="row"><button id="connect">Connect Wallet</button></div>
-<div class="row addr" id="address"></div>
-<div class="row"><input id="msg" placeholder="Message to sign" /></div>
-<div class="row"><button id="sign">Sign & Login</button></div>
-<div class="row">Result:</div>
-<div class="row"><textarea id="result" rows="3"></textarea></div>
+<div class="card">
+<h2>TreadFi Login</h2>
+<div class="row">
+    <label>Wallet Address</label>
+    <input id="address" type="text" readonly />
+</div>
+<div class="row">
+    <div class="btn-group">
+        <button id="connectBtn" class="btn-primary">Connect Wallet</button>
+        <button id="signBtn" class="btn-primary" disabled>Sign & Login</button>
+    </div>
+</div>
+<div class="row">
+    <label>Message to Sign</label>
+    <textarea id="message" readonly placeholder="Loading..."></textarea>
+</div>
+<div id="statusBox" class="status"></div>
+</div>
 <script>
-let account = null, lastNonce = null;
+const $ = s => document.querySelector(s);
+let account = null, lastNonce = null, signingMessage = null;
+const showStatus = (msg, type) => { const b = $('#statusBox'); b.textContent = msg; b.className = 'status ' + type; };
 
-async function fetchNonce() {{
-const r = await fetch('/nonce');
-const j = await r.json();
-if (j.error) throw new Error(j.error);
-lastNonce = j.nonce;
-document.getElementById('msg').value = j.message;
-}}
-window.addEventListener('load', () => {{
-fetchNonce().catch(e => alert('Failed to get nonce: ' + e.message));
-}});
+async function fetchNonce() {
+    try {
+        const r = await fetch('/nonce');
+        const j = await r.json();
+        if (j.error) throw new Error(j.error);
+        lastNonce = j.nonce;
+        signingMessage = j.message;
+        $('#message').value = j.message;
+        showStatus('Message loaded', 'info');
+    } catch (e) { showStatus('Failed: ' + e.message, 'error'); }
+}
+fetchNonce();
 
-document.getElementById('connect').onclick = async () => {{
-if (!window.ethereum) {{ alert('Please install Rabby or MetaMask'); return; }}
-const acc = await window.ethereum.request({{ method: 'eth_requestAccounts' }});
-account = acc[0];
-document.getElementById('address').innerText = 'Wallet: ' + account;
-}};
+$('#connectBtn').onclick = async () => {
+    try {
+        if (!window.ethereum) throw new Error('No wallet detected');
+        const acc = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        account = acc[0];
+        $('#address').value = account;
+        $('#signBtn').disabled = !signingMessage;
+        $('#connectBtn').disabled = true;
+        showStatus('Connected: ' + account, 'success');
+    } catch (e) { showStatus('Connect failed: ' + e.message, 'error'); }
+};
 
-document.getElementById('sign').onclick = async () => {{
-if (!account) return alert('Please connect your wallet first.');
-const msg = document.getElementById('msg').value;
-if (!msg) return alert('No message to sign.');
-try {{
-const sign = await window.ethereum.request({{
-method: 'personal_sign',
-params: [msg, account],
-}});
-document.getElementById('result').value = sign;
-
-const resp = await fetch('/submit', {{
-method: 'POST',
-headers: {{ 'Content-Type': 'application/json' }},
-body: JSON.stringify({{ address: account, signature: sign, nonce: lastNonce }})
-}});
-const text = await resp.text();
-if (!resp.ok) throw new Error(text);
-alert(text);
-}} catch (e) {{
-alert('Signing/Submit failed: ' + e.message);
-}}
-}};
+$('#signBtn').onclick = async () => {
+    try {
+        if (!account || !signingMessage) throw new Error('Connect wallet first');
+        showStatus('Please sign in your wallet...', 'info');
+        const signature = await window.ethereum.request({ method: 'personal_sign', params: [signingMessage, account] });
+        showStatus('Submitting...', 'info');
+        const r = await fetch('/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: account, signature, nonce: lastNonce }) });
+        const text = await r.text();
+        if (!r.ok) throw new Error(text);
+        showStatus('Login successful! You can close this tab.', 'success');
+        $('#signBtn').disabled = true;
+    } catch (e) { showStatus('Failed: ' + e.message, 'error'); }
+};
 </script>
 </body>
 </html>
