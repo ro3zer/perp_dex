@@ -293,10 +293,11 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
     # ----------------------------
     async def get_mark_price(self, symbol: str) -> str:
         """Get mark price (WS first, REST fallback)"""
-        try:
-            return await self.get_mark_price_ws(symbol)
-        except Exception as e:
-            print(f"[standx] get_mark_price falling back to REST: {e}")
+        if self._prefer_ws:
+            try:
+                return await self.get_mark_price_ws(symbol, timeout=0.5)
+            except (TimeoutError, Exception) as e:
+                print(f"[standx] get_mark_price falling back to REST: {e}")
         return await self.get_mark_price_rest(symbol)
 
     async def get_mark_price_ws(self, symbol: str, timeout: float = 5.0) -> str:
@@ -423,13 +424,12 @@ class StandXExchange(MultiPerpDexMixin, MultiPerpDex):
         Get position (WS first, REST fallback)
         Uses cached data from initial REST load + WS updates
         """
-        # Try WS (cached data from initial load + WS updates)
-        if self._prefer_ws and self.ws_client:
-            ready = await self.ws_client.wait_position_ready(timeout=0.5)
-            if ready:
-                pos = self.ws_client.get_position(symbol)
-                # None means no position (valid result)
-                return self._parse_position(pos) if pos else None
+        # Try WS first
+        if self._prefer_ws:
+            try:
+                return await self.get_position_ws(symbol, timeout=0.5)
+            except TimeoutError:
+                pass  # fallback to REST
 
         # REST fallback
         print(f"[StandXExchange] get_position: REST fallback")
